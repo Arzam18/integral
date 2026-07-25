@@ -1,44 +1,104 @@
-name: Build Integral Android
+name: Build Integral for Android
 
 on:
   workflow_dispatch:
+  push:
+    branches: [ "*" ]
+  pull_request:
+    branches: [ "*" ]
 
 permissions:
   contents: write
 
 jobs:
-  build:
+  build-android:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
 
-      - name: Install Android NDK
+      - name: Download sse2neon Header
         run: |
-          wget -q https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
-          unzip -q android-ndk-r26d-linux.zip
-          echo "ANDROID_NDK_HOME=$PWD/android-ndk-r26d" >> $GITHUB_ENV
+          curl -sL https://raw.githubusercontent.com/DLTcollab/sse2neon/master/sse2neon.h -o sse2neon.h
 
-      - name: Configure
+      - name: Download Network File
         run: |
-          mkdir build
-          cd build
-          cmake .. \
-            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-24 \
-            -DCMAKE_BUILD_TYPE=Release
+          NETWORK_NAME="zekrom-v7"
+          NNUE_URL="https://github.com/aronpetko/integral-networks/releases/download/${NETWORK_NAME}/${NETWORK_NAME}.nnue"
+          curl -sL "$NNUE_URL" -o "${NETWORK_NAME}.nnue"
 
-      - name: Build
+      - name: Build Preprocessor & Process Network on Host
         run: |
-          cd build
-          make -j$(nproc)
+          echo "Building preprocess binary natively for Linux x86_64..."
+          PREPROCESS_SOURCES=$(find preprocess -type f \( -name "*.cc" -o -name "*.cpp" \))
+          g++ -O3 -std=c++20 $PREPROCESS_SOURCES -Ithird-party/fmt/include -I. -o host_preprocess
 
-      - name: List build output
+          echo "Running preprocess tool on NNUE file..."
+          ./host_preprocess zekrom-v7.nnue processed.nnue
+
+      - name: Patch SIMD Headers and aligned_alloc for ARM64
         run: |
-          find build -maxdepth 3 -type f
+          python3 -c '
+          import os
 
-      - name: Upload artifact
+          def patch_file(path):
+              with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                  content = f.read()
+
+              original = content
+
+              # Replace x86 SIMD headers with sse2neon translator
+              for header in ["<immintrin.h>", "<nmmintrin.h>", "<xmmintrin.h>", "<emmintrin.h>"]:
+                  if header in content:
+                      content = content.replace(header, "\"sse2neon.h\"")
+
+              # Patch aligned_alloc fallback for Android
+              if "std::aligned_alloc" in content:
+                  content = content.replace(
+                      "ptr = std::aligned_alloc(Alignment, std::max(alignedBytes, Alignment));",
+                      "posix_memalign(&ptr, Alignment, std::max(alignedBytes, Alignment));"
+                  )
+
+              if content != original:
+                  with open(path, "w", encoding="utf-8") as f:
+                      f.write(content)
+                  print(f"Patched: {path}")
+
+          for root, dirs, files in os.walk("."):
+              for file in files:
+                  if file.endswith((".h", ".hpp", ".cpp", ".cc", ".c")):
+                      patch_file(os.path.join(root, file))
+          '
+
+      - name: Build Integral for Android ARM64
+        run: |
+          NDK_CXX="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang++"
+
+          # Collect all C++ sources (excluding preprocess directory)
+          SOURCES=$(find src -type f \( -name "*.cc" -o -name "*.cpp" \))
+
+          echo "Compiling Integral for Android ARM64..."
+          $NDK_CXX -O3 -flto -std=c++20 -pthread \
+            -static-libstdc++ \
+            -I. -Isrc -Ithird-party/fathom -Ithird-party/fmt/include \
+            -DFMT_HEADER_ONLY -DTB_NO_HELPER_API -DBUILD_SSE41_POPCNT \
+            -DEVALFILE=\"processed.nnue\" \
+            $SOURCES third-party/fathom/tbprobe.c -lm -o integral-android-arm64
+
+          mkdir -p dist/bin
+          mv integral-android-arm64 dist/bin/
+
+      - name: Verify Android Binary
+        run: |
+          ls -lh dist/bin/
+          file dist/bin/*
+
+      - name: Upload Android Artifact
         uses: actions/upload-artifact@v4
         with:
           name: integral-android-arm64
-          path: build/**
+          path: dist/bin/*
