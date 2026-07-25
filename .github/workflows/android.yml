@@ -36,7 +36,7 @@ jobs:
           echo "Building preprocess binary natively for Linux x86_64..."
           PREPROCESS_SOURCES=$(find preprocess -type f \( -name "*.cc" -o -name "*.cpp" \))
           
-          g++ -O3 -std=c++20 -march=native -DBUILD_NATIVE -DFMT_HEADER_ONLY -DFMT_CONSTEVAL= $PREPROCESS_SOURCES \
+          g++ -O3 -std=c++20 -march=native -DBUILD_NATIVE -DNDEBUG -DFMT_HEADER_ONLY -DFMT_CONSTEVAL= $PREPROCESS_SOURCES \
             -I. -Ipreprocess -Ishared -Ithird-party/fmt/include -o host_preprocess
 
           echo "Running preprocess tool on NNUE file..."
@@ -81,10 +81,12 @@ jobs:
           NDK_CXX="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang++"
 
           # Collect source files from src/ and shared/ (excluding preprocess)
-          SOURCES=$(find src shared -type f \( -name "*.cc" -o -name "*.cpp" \) ! -path "*/preprocess/*" 2>/dev/null || find src -type f \( -name "*.cc" -o -name "*.cpp" \))
+          SOURCES=$(find src shared -type f \( -name "*.cc" -o -name "*.cpp" \) ! -path "*/preprocess/*" 2>/devnull || find src -type f \( -name "*.cc" -o -name "*.cpp" \))
 
-          echo "Compiling Integral for Android ARM64 (Statically linked)..."
+          echo "Compiling High-Performance Integral for Android ARM64..."
           $NDK_CXX -O3 -flto -std=c++20 -pthread \
+            -march=armv8.2-a+dotprod+crypto \
+            -funroll-loops -fomit-frame-pointer -DNDEBUG \
             -static-libstdc++ \
             -I. -Isrc -Ishared -Ithird-party/fathom -Ithird-party/fmt/include \
             -DFMT_HEADER_ONLY -DFMT_CONSTEVAL= -DTB_NO_HELPER_API -DBUILD_SSE41_POPCNT \
