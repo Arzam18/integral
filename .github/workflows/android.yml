@@ -35,12 +35,15 @@ jobs:
         run: |
           echo "Building preprocess binary natively for Linux x86_64..."
           PREPROCESS_SOURCES=$(find preprocess -type f \( -name "*.cc" -o -name "*.cpp" \))
-          g++ -O3 -std=c++20 $PREPROCESS_SOURCES -Ithird-party/fmt/include -I. -o host_preprocess
+          
+          # Added -march=native -DBUILD_NATIVE so simd.h knows the target architecture
+          g++ -O3 -std=c++20 -march=native -DBUILD_NATIVE $PREPROCESS_SOURCES \
+            -I. -Ipreprocess -Ishared -Ithird-party/fmt/include -o host_preprocess
 
           echo "Running preprocess tool on NNUE file..."
           ./host_preprocess zekrom-v7.nnue processed.nnue
 
-      - name: Patch SIMD Headers and aligned_alloc for ARM64
+      - name: Patch SIMD Headers and Memory Allocations for ARM64
         run: |
           python3 -c '
           import os
@@ -52,11 +55,11 @@ jobs:
               original = content
 
               # Replace x86 SIMD headers with sse2neon translator
-              for header in ["<immintrin.h>", "<nmmintrin.h>", "<xmmintrin.h>", "<emmintrin.h>"]:
+              for header in ["<immintrin.h>", "<nmmintrin.h>", "<smmintrin.h>", "<xmmintrin.h>", "<emmintrin.h>", "<tmmintrin.h>"]:
                   if header in content:
                       content = content.replace(header, "\"sse2neon.h\"")
 
-              # Patch aligned_alloc fallback for Android
+              # Patch std::aligned_alloc fallback for Android NDK
               if "std::aligned_alloc" in content:
                   content = content.replace(
                       "ptr = std::aligned_alloc(Alignment, std::max(alignedBytes, Alignment));",
@@ -78,13 +81,13 @@ jobs:
         run: |
           NDK_CXX="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang++"
 
-          # Collect all C++ sources (excluding preprocess directory)
-          SOURCES=$(find src -type f \( -name "*.cc" -o -name "*.cpp" \))
+          # Collect source files from src/ and shared/ (excluding preprocess)
+          SOURCES=$(find src shared -type f \( -name "*.cc" -o -name "*.cpp" \) ! -path "*/preprocess/*" 2>/dev/null || find src -type f \( -name "*.cc" -o -name "*.cpp" \))
 
-          echo "Compiling Integral for Android ARM64..."
+          echo "Compiling Integral for Android ARM64 (Statically linked)..."
           $NDK_CXX -O3 -flto -std=c++20 -pthread \
             -static-libstdc++ \
-            -I. -Isrc -Ithird-party/fathom -Ithird-party/fmt/include \
+            -I. -Isrc -Ishared -Ithird-party/fathom -Ithird-party/fmt/include \
             -DFMT_HEADER_ONLY -DTB_NO_HELPER_API -DBUILD_SSE41_POPCNT \
             -DEVALFILE=\"processed.nnue\" \
             $SOURCES third-party/fathom/tbprobe.c -lm -o integral-android-arm64
