@@ -24,7 +24,9 @@ Board::Board() : history_({}) {}
 Board::Board(const BoardState &state) : history_({}), state_(state) {}
 
 Board::Board(const Board &other)
-    : state_(other.state_), history_(other.history_) {}
+    : state_(other.state_),
+      history_(other.history_),
+      key_history_(other.key_history_) {}
 
 Board &Board::operator=(const Board &other) {
   if (this == &other) {
@@ -33,6 +35,7 @@ Board &Board::operator=(const Board &other) {
 
   state_ = other.state_;
   history_ = other.history_;
+  key_history_ = other.key_history_;
   accumulator_ = std::make_shared<nnue::Accumulator>();
   return *this;
 }
@@ -44,6 +47,7 @@ void Board::SetFromFen(std::string_view fen_str) {
   accumulator_->SetFromState(state_);
 
   history_.Clear();
+  key_history_.Clear();
 
   CalculateThreats();
 }
@@ -203,6 +207,7 @@ bool Board::IsMoveLegal(Move move) const {
 
 void Board::MakeMove(Move move) {
   history_.Push(state_);
+  key_history_.Push(state_.zobrist_key);
 
   const Color us = state_.turn, them = FlipColor(us);
 
@@ -211,8 +216,8 @@ void Board::MakeMove(Move move) {
              captured = state_.GetPieceType(to);
   const auto move_type = move.GetType();
 
-  // Initialize accumulator change
-  nnue::AccumulatorChange accum_change{};
+  // Initialize PSQT accumulator change
+  nnue::PsqtAccumulatorChange accum_change{};
   accum_change.sub_0 = {from, piece, us};
   accum_change.add_0 = {to, piece, us};
 
@@ -223,15 +228,15 @@ void Board::MakeMove(Move move) {
     const Square pawn_square =
         state_.en_passant - (us == Color::kWhite ? 8 : -8);
     state_.RemovePiece(pawn_square, them);
-    accum_change.type = nnue::AccumulatorChange::kCapture;
+    accum_change.type = nnue::PsqtAccumulatorChange::kCapture;
     accum_change.sub_1 = {pawn_square, PieceType::kPawn, them};
   } else if (captured != PieceType::kNone) {
     state_.RemovePiece(to, them);
     new_fifty_move_clock = 0;
-    accum_change.type = nnue::AccumulatorChange::kCapture;
+    accum_change.type = nnue::PsqtAccumulatorChange::kCapture;
     accum_change.sub_1 = {to, captured, them};
   } else {
-    accum_change.type = nnue::AccumulatorChange::kNormal;
+    accum_change.type = nnue::PsqtAccumulatorChange::kNormal;
   }
 
   // Xor out en passant if it exists
@@ -251,7 +256,7 @@ void Board::MakeMove(Move move) {
   auto new_piece = piece;
   if (move_type == MoveType::kCastle) {
     HandleCastling(move);
-    accum_change.type = nnue::AccumulatorChange::kCastle;
+    accum_change.type = nnue::PsqtAccumulatorChange::kCastle;
     const Square rook_from = to > from ? Square(to + 1) : Square(to - 2);
     const Square rook_to = to > from ? Square(to - 1) : Square(to + 1);
     accum_change.add_1 = {rook_to, PieceType::kRook, us};
@@ -276,21 +281,24 @@ void Board::MakeMove(Move move) {
 
   CalculateThreats();
 
-  // Push the accumulator change
-  accumulator_->PushChanges(state_, accum_change);
+  // Push the accumulator change, pointing at the pre-move state in history
+  accumulator_->PushChanges(history_.Back(), accum_change);
 }
 
 void Board::UndoMove() {
   state_ = history_.PopBack();
+  key_history_.PopBack();
   accumulator_->UndoMove();
 }
 
 void Board::UndoNullMove() {
   state_ = history_.PopBack();
+  key_history_.PopBack();
 }
 
 void Board::MakeNullMove() {
   history_.Push(state_);
+  key_history_.Push(state_.zobrist_key);
 
   // Xor out en passant if it exists
   if (state_.en_passant != Squares::kNoSquare) {
@@ -366,7 +374,7 @@ bool Board::HasUpcomingRepetition(U16 ply) const {
   }
 
   const auto keys_back = [this](int dist) {
-    return history_[history_.Size() - dist].zobrist_key;
+    return key_history_[key_history_.Size() - dist];
   };
 
   const auto occupied = state_.Occupied();
@@ -420,7 +428,7 @@ bool Board::IsRepetition(U16 ply) const {
 
   bool hit_before_root = false;
   for (int i = 4; i <= max_dist; i += 2) {
-    if (state_.zobrist_key == history_[history_.Size() - i].zobrist_key) {
+    if (state_.zobrist_key == key_history_[key_history_.Size() - i]) {
       if (ply >= i) return true;
       if (hit_before_root) return true;
       hit_before_root = true;
