@@ -95,9 +95,9 @@ jobs:
             -DCMAKE_ANDROID_NDK="$ANDROID_NDK_LATEST_HOME" \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_NATIVE=OFF \
-            -DBUILD_SSE41_POPCNT=ON \
+            -DBUILD_SSE41_POPCNT=OFF \
             -DEVALFILE="../processed.nnue" \
-            -DCMAKE_CXX_FLAGS="-march=armv8.2-a+dotprod+crypto -D__SSE4_1__ -D__POPCNT__ -static-libstdc++"
+            -DCMAKE_CXX_FLAGS="-march=armv8.2-a+dotprod+crypto -static-libstdc++"
 
           cmake --build . --config Release -j$(nproc)
 
