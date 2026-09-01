@@ -25,31 +25,37 @@ jobs:
         run: |
           curl -sL https://raw.githubusercontent.com/DLTcollab/sse2neon/master/sse2neon.h -o sse2neon.h
 
-      - name: Download Network File Safely
+      - name: Download and Preprocess Network Natively on Host
         run: |
           NETWORK_NAME="vaporeon"
           NNUE_URL="https://github.com/aronpetko/integral-networks/releases/download/${NETWORK_NAME}/${NETWORK_NAME}.nnue"
-          echo "Downloading ${NETWORK_NAME}.nnue without progress spam..."
+          echo "Downloading ${NETWORK_NAME}.nnue..."
           curl -sL --fail --retry 3 "$NNUE_URL" -o "${NETWORK_NAME}.nnue"
-          ls -lh "${NETWORK_NAME}.nnue"
 
-      - name: Patch SIMD Headers and Memory Allocations for ARM64
+          echo "Building preprocess tool natively for Linux x86_64..."
+          PREPROCESS_SOURCES=$(find preprocess -type f \( -name "*.cc" -o -name "*.cpp" \))
+          g++ -O3 -std=c++20 -march=native -DBUILD_NATIVE -DNDEBUG -DFMT_HEADER_ONLY -DFMT_CONSTEVAL= $PREPROCESS_SOURCES \
+            -I. -Ipreprocess -Ishared -Ithird-party/fmt/include -o host_preprocess
+
+          echo "Running host preprocess tool..."
+          ./host_preprocess "${NETWORK_NAME}.nnue" processed.nnue
+          ls -lh processed.nnue
+
+      - name: Patch SIMD Headers, Memory Allocations, and CMakeLists for Android
         run: |
           python3 -c '
           import os
 
+          # 1. Patch source files for sse2neon and aligned_alloc
           def patch_file(path):
               with open(path, "r", encoding="utf-8", errors="ignore") as f:
                   content = f.read()
 
               original = content
-
-              # Replace x86 SIMD headers with sse2neon translator
               for header in ["<immintrin.h>", "<nmmintrin.h>", "<smmintrin.h>", "<xmmintrin.h>", "<emmintrin.h>", "<tmmintrin.h>", "<pmmintrin.h>", "<ammintrin.h>"]:
                   if header in content:
                       content = content.replace(header, "\"sse2neon.h\"")
 
-              # Patch std::aligned_alloc fallback for Android NDK
               if "std::aligned_alloc" in content:
                   content = content.replace(
                       "ptr = std::aligned_alloc(Alignment, std::max(alignedBytes, Alignment));",
@@ -59,12 +65,26 @@ jobs:
               if content != original:
                   with open(path, "w", encoding="utf-8") as f:
                       f.write(content)
-                  print(f"Patched: {path}")
 
           for root, dirs, files in os.walk("."):
               for file in files:
                   if file.endswith((".h", ".hpp", ".cpp", ".cc", ".c")):
                       patch_file(os.path.join(root, file))
+
+          # 2. Patch root CMakeLists.txt to remove preprocess subdirectory dependency
+          with open("CMakeLists.txt", "r", encoding="utf-8") as f:
+              cm_content = f.read()
+
+          # Remove add_subdirectory(preprocess) and custom command dependencies since we already generated processed.nnue
+          cm_content = cm_content.replace("add_subdirectory(preprocess)", "# add_subdirectory(preprocess)")
+          cm_content = cm_content.replace('add_custom_target(run_preprocess ALL DEPENDS ${PREPROCESSED_FILE})', '# add_custom_target(run_preprocess ALL DEPENDS ${PREPROCESSED_FILE})')
+          
+          # Force EVALFILE to use our pre-generated processed.nnue in the workspace root
+          cm_content = cm_content.replace('set(PREPROCESSED_FILE "${CMAKE_CURRENT_BINARY_DIR}/processed.nnue")', 'set(PREPROCESSED_FILE "../processed.nnue")')
+
+          with open("CMakeLists.txt", "w", encoding="utf-8") as f:
+              f.write(cm_content)
+          print("Patched CMakeLists.txt successfully.")
           '
 
       - name: Configure and Build with CMake for Android ARM64
@@ -72,7 +92,6 @@ jobs:
           mkdir build
           cd build
 
-          # Setup Android NDK toolchain variables for CMake and point to local pre-downloaded network
           cmake .. \
             -DCMAKE_SYSTEM_NAME=Android \
             -DCMAKE_SYSTEM_VERSION=28 \
@@ -81,7 +100,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_NATIVE=OFF \
             -DBUILD_SSE41_POPCNT=ON \
-            -DEVALFILE="../vaporeon.nnue" \
+            -DEVALFILE="../processed.nnue" \
             -DCMAKE_CXX_FLAGS="-march=armv8.2-a+dotprod+crypto -D__SSE4_1__ -D__POPCNT__ -static-libstdc++"
 
           cmake --build . --config Release -j$(nproc)
@@ -99,3 +118,4 @@ jobs:
         with:
           name: integral-android-arm64
           path: dist/bin/*
+
