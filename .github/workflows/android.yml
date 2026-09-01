@@ -25,6 +25,14 @@ jobs:
         run: |
           curl -sL https://raw.githubusercontent.com/DLTcollab/sse2neon/master/sse2neon.h -o sse2neon.h
 
+      - name: Download Network File Safely
+        run: |
+          NETWORK_NAME="vaporeon"
+          NNUE_URL="https://github.com/aronpetko/integral-networks/releases/download/${NETWORK_NAME}/${NETWORK_NAME}.nnue"
+          echo "Downloading ${NETWORK_NAME}.nnue without progress spam..."
+          curl -sL --fail --retry 3 "$NNUE_URL" -o "${NETWORK_NAME}.nnue"
+          ls -lh "${NETWORK_NAME}.nnue"
+
       - name: Patch SIMD Headers and Memory Allocations for ARM64
         run: |
           python3 -c '
@@ -64,7 +72,7 @@ jobs:
           mkdir build
           cd build
 
-          # Setup Android NDK toolchain variables for CMake 
+          # Setup Android NDK toolchain variables for CMake and point to local pre-downloaded network
           cmake .. \
             -DCMAKE_SYSTEM_NAME=Android \
             -DCMAKE_SYSTEM_VERSION=28 \
@@ -73,6 +81,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_NATIVE=OFF \
             -DBUILD_SSE41_POPCNT=ON \
+            -DEVALFILE="../vaporeon.nnue" \
             -DCMAKE_CXX_FLAGS="-march=armv8.2-a+dotprod+crypto -D__SSE4_1__ -D__POPCNT__ -static-libstdc++"
 
           cmake --build . --config Release -j$(nproc)
@@ -90,4 +99,3 @@ jobs:
         with:
           name: integral-android-arm64
           path: dist/bin/*
-
