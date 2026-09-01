@@ -75,6 +75,7 @@ jobs:
 
           cm_content = cm_content.replace("add_subdirectory(preprocess)", "# add_subdirectory(preprocess)")
           cm_content = cm_content.replace('add_custom_target(run_preprocess ALL DEPENDS ${PREPROCESSED_FILE})', '# add_custom_target(run_preprocess ALL DEPENDS ${PREPROCESSED_FILE})')
+          cm_content = cm_content.replace('add_dependencies(integral run_preprocess)', '# add_dependencies(integral run_preprocess)')
           cm_content = cm_content.replace('set(PREPROCESSED_FILE "${CMAKE_CURRENT_BINARY_DIR}/processed.nnue")', 'set(PREPROCESSED_FILE "../processed.nnue")')
 
           with open("CMakeLists.txt", "w", encoding="utf-8") as f:
