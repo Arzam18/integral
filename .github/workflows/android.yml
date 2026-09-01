@@ -64,7 +64,7 @@ jobs:
           mkdir build
           cd build
 
-          # Setup Android NDK toolchain variables for CMake
+          # Setup Android NDK toolchain variables for CMake 
           cmake .. \
             -DCMAKE_SYSTEM_NAME=Android \
             -DCMAKE_SYSTEM_VERSION=28 \
@@ -90,3 +90,4 @@ jobs:
         with:
           name: integral-android-arm64
           path: dist/bin/*
+
