@@ -43,10 +43,9 @@ jobs:
 
       - name: Patch SIMD Headers, Memory Allocations, and CMakeLists for Android
         run: |
-          python3 -c '
+          python3 - << 'EOF'
           import os
 
-          # 1. Patch source files for sse2neon and aligned_alloc
           def patch_file(path):
               with open(path, "r", encoding="utf-8", errors="ignore") as f:
                   content = f.read()
@@ -71,21 +70,17 @@ jobs:
                   if file.endswith((".h", ".hpp", ".cpp", ".cc", ".c")):
                       patch_file(os.path.join(root, file))
 
-          # 2. Patch root CMakeLists.txt to remove preprocess subdirectory dependency
           with open("CMakeLists.txt", "r", encoding="utf-8") as f:
               cm_content = f.read()
 
-          # Remove add_subdirectory(preprocess) and custom command dependencies since we already generated processed.nnue
           cm_content = cm_content.replace("add_subdirectory(preprocess)", "# add_subdirectory(preprocess)")
           cm_content = cm_content.replace('add_custom_target(run_preprocess ALL DEPENDS ${PREPROCESSED_FILE})', '# add_custom_target(run_preprocess ALL DEPENDS ${PREPROCESSED_FILE})')
-          
-          # Force EVALFILE to use our pre-generated processed.nnue in the workspace root
           cm_content = cm_content.replace('set(PREPROCESSED_FILE "${CMAKE_CURRENT_BINARY_DIR}/processed.nnue")', 'set(PREPROCESSED_FILE "../processed.nnue")')
 
           with open("CMakeLists.txt", "w", encoding="utf-8") as f:
               f.write(cm_content)
-          print("Patched CMakeLists.txt successfully.")
-          '
+          print("Patched CMakeLists.txt and source files successfully.")
+          EOF
 
       - name: Configure and Build with CMake for Android ARM64
         run: |
