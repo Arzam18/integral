@@ -1,4 +1,4 @@
-name: Build Integral Android ARM64
+name: Build Android ARM64
 
 on:
   push:
@@ -20,7 +20,11 @@ jobs:
       - name: Install Build Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake ninja-build
+          sudo apt-get install -y build-essential cmake ninja-build curl wget
+
+      - name: Download Network File
+        run: |
+          curl -L -o haxorus.nnue "https://github.com/aronpetko/integral-networks/releases/download/haxorus/haxorus.nnue"
 
       - name: Stage 1 - Host Preprocess (Generate ARM64 NNUE)
         run: |
@@ -29,15 +33,10 @@ jobs:
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_NATIVE=ON \
-            -DPRODUCE_AARCH64_NET=ON
+            -DPRODUCE_AARCH64_NET=ON \
+            -DEVALFILE="$(pwd)/../haxorus.nnue"
           make preprocess -j$(nproc)
-          
-          # Locates or downloads haxorus.nnue and converts layout for ARM64
-          NNUE_FILE=$(ls ../*.nnue 2>/dev/null | head -n 1)
-          if [ -z "$NNUE_FILE" ]; then
-            NNUE_FILE="../haxorus.nnue"
-          fi
-          ./preprocess/preprocess "$NNUE_FILE" "processed_aarch64.nnue"
+          ./preprocess/preprocess "../haxorus.nnue" "processed_aarch64.nnue"
 
       - name: Stage 2 - Cross-Compile Engine for Android ARM64
         run: |
