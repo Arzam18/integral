@@ -1,14 +1,11 @@
-name: Build Integral for Android (CMake)
+name: Build Integral Android ARM64
 
 on:
-  workflow_dispatch:
   push:
-    branches: [ "*" ]
+    branches: [ "main", "master" ]
   pull_request:
-    branches: [ "*" ]
-
-permissions:
-  contents: write
+    branches: [ "main", "master" ]
+  workflow_dispatch:
 
 jobs:
   build-android:
@@ -19,99 +16,52 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
-          fetch-depth: 1
 
-      - name: Download sse2neon Header
+      - name: Install Build Dependencies
         run: |
-          curl -sL https://raw.githubusercontent.com/DLTcollab/sse2neon/master/sse2neon.h -o sse2neon.h
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build
 
-      - name: Download and Preprocess Network Natively on Host
+      - name: Stage 1 - Host Preprocess (Generate ARM64 NNUE)
         run: |
-          NETWORK_NAME="vaporeon"
-          NNUE_URL="https://github.com/aronpetko/integral-networks/releases/download/${NETWORK_NAME}/${NETWORK_NAME}.nnue"
-          echo "Downloading ${NETWORK_NAME}.nnue..."
-          curl -sL --fail --retry 3 "$NNUE_URL" -o "${NETWORK_NAME}.nnue"
-
-          echo "Building preprocess tool natively for Linux x86_64..."
-          PREPROCESS_SOURCES=$(find preprocess -type f \( -name "*.cc" -o -name "*.cpp" \))
-          g++ -O3 -std=c++20 -march=native -DBUILD_NATIVE -DNDEBUG -DFMT_HEADER_ONLY -DFMT_CONSTEVAL= $PREPROCESS_SOURCES \
-            -I. -Ipreprocess -Ishared -Ithird-party/fmt/include -o host_preprocess
-
-          echo "Running host preprocess tool..."
-          ./host_preprocess "${NETWORK_NAME}.nnue" processed.nnue
-          ls -lh processed.nnue
-
-      - name: Patch SIMD Headers, Memory Allocations, and CMakeLists for Android
-        run: |
-          python3 - << 'EOF'
-          import os
-
-          def patch_file(path):
-              with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                  content = f.read()
-
-              original = content
-              for header in ["<immintrin.h>", "<nmmintrin.h>", "<smmintrin.h>", "<xmmintrin.h>", "<emmintrin.h>", "<tmmintrin.h>", "<pmmintrin.h>", "<ammintrin.h>"]:
-                  if header in content:
-                      content = content.replace(header, "\"sse2neon.h\"")
-
-              if "std::aligned_alloc" in content:
-                  content = content.replace(
-                      "ptr = std::aligned_alloc(Alignment, std::max(alignedBytes, Alignment));",
-                      "posix_memalign(&ptr, Alignment, std::max(alignedBytes, Alignment));"
-                  )
-
-              if content != original:
-                  with open(path, "w", encoding="utf-8") as f:
-                      f.write(content)
-
-          for root, dirs, files in os.walk("."):
-              for file in files:
-                  if file.endswith((".h", ".hpp", ".cpp", ".cc", ".c")):
-                      patch_file(os.path.join(root, file))
-
-          with open("CMakeLists.txt", "r", encoding="utf-8") as f:
-              cm_content = f.read()
-
-          cm_content = cm_content.replace("add_subdirectory(preprocess)", "# add_subdirectory(preprocess)")
-          cm_content = cm_content.replace('add_custom_target(run_preprocess ALL DEPENDS ${PREPROCESSED_FILE})', '# add_custom_target(run_preprocess ALL DEPENDS ${PREPROCESSED_FILE})')
-          cm_content = cm_content.replace('add_dependencies(integral run_preprocess)', '# add_dependencies(integral run_preprocess)')
-          cm_content = cm_content.replace('set(PREPROCESSED_FILE "${CMAKE_CURRENT_BINARY_DIR}/processed.nnue")', 'set(PREPROCESSED_FILE "../processed.nnue")')
-
-          with open("CMakeLists.txt", "w", encoding="utf-8") as f:
-              f.write(cm_content)
-          print("Patched CMakeLists.txt and source files successfully.")
-          EOF
-
-      - name: Configure and Build with CMake for Android ARM64
-        run: |
-          mkdir build
-          cd build
-
+          mkdir -p build_host
+          cd build_host
           cmake .. \
-            -DCMAKE_SYSTEM_NAME=Android \
-            -DCMAKE_SYSTEM_VERSION=28 \
-            -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a \
-            -DCMAKE_ANDROID_NDK="$ANDROID_NDK_LATEST_HOME" \
             -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_NATIVE=OFF \
-            -DBUILD_SSE41_POPCNT=OFF \
-            -DEVALFILE="../processed.nnue" \
-            -DCMAKE_CXX_FLAGS="-march=armv8.2-a+dotprod+crypto -static-libstdc++"
+            -DBUILD_NATIVE=ON \
+            -DPRODUCE_AARCH64_NET=ON
+          make preprocess -j$(nproc)
+          
+          # Locates or downloads haxorus.nnue and converts layout for ARM64
+          NNUE_FILE=$(ls ../*.nnue 2>/dev/null | head -n 1)
+          if [ -z "$NNUE_FILE" ]; then
+            NNUE_FILE="../haxorus.nnue"
+          fi
+          ./preprocess/preprocess "$NNUE_FILE" "processed_aarch64.nnue"
 
-          cmake --build . --config Release -j$(nproc)
-
-          mkdir -p ../dist/bin
-          cp integral ../dist/bin/integral-android-arm64
-
-      - name: Verify Android Binary
+      - name: Stage 2 - Cross-Compile Engine for Android ARM64
         run: |
-          ls -lh dist/bin/
-          file dist/bin/*
+          mkdir -p build_android
+          cd build_android
+          
+          NDK_TOOLCHAIN="$ANDROID_NDK_LATEST_HOME/build/cmake/android.toolchain.cmake"
+          
+          cmake .. \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK_TOOLCHAIN" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-24 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_ANDROID_AARCH64=ON \
+            -DEVALFILE="$(pwd)/../build_host/processed_aarch64.nnue"
+          
+          make -j$(nproc)
 
-      - name: Upload Android Artifact
+      - name: Package Binary Artifact
+        run: |
+          cp build_android/integral integral_v8_ja_aarch64
+
+      - name: Upload Android Executable Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: integral-android-arm64
-          path: dist/bin/*
-
+          name: integral-v8-ja-aarch64
+          path: integral_v8_ja_aarch64
