@@ -1,3 +1,7 @@
+#include <memory>
+#include <string>
+#include <array>
+#include <cstdint>
 #include <fmt/format.h>
 
 #include <fstream>
