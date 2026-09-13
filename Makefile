@@ -145,7 +145,7 @@ android_aarch64:
 		-DEVALFILE="$(EVALFILE)" \
 		..
 	@$(MAKE) -C build_host preprocess
-	@build_host/preprocess/preprocess.exe \
+	@build_host/preprocess/preprocess \
 		"$(if $(EVALFILE),$(EVALFILE),haxorus.nnue)" \
 		"build_host/processed_aarch64.nnue"
 	@echo "=== Stage 2: cross-compile engine for aarch64 ==="
