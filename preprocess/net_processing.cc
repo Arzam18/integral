@@ -4,6 +4,10 @@
 
 #include "../shared/nnue/definitions.h"
 
+// Define this when you want the output network to be used on aarch64 / NEON.
+// Leave it undefined (or comment it out) when producing a normal x86 network.
+#define PRODUCE_AARCH64_NET
+
 std::unique_ptr<nnue::Network> ProcessNetwork(
     const std::unique_ptr<nnue::RawNetwork>& raw_network) {
   auto network = std::make_unique<nnue::Network>();
@@ -18,13 +22,16 @@ std::unique_ptr<nnue::Network> ProcessNetwork(
   network->feature_biases = raw_network->feature_biases;
   network->threat_weights = raw_network->threat_weights;
 
-#if BUILD_HAS_SIMD and !defined(SPARSE_PERMUTE)
+#if defined(BUILD_HAS_SIMD) && !defined(SPARSE_PERMUTE) && \
+    !defined(PRODUCE_AARCH64_NET) && \
+    (defined(__x86_64__) || defined(_M_X64) || defined(__i386) || defined(_M_IX86))
+  // x86-only: packus / SSE layout permutation
   constexpr int kWeightsPerBlock = sizeof(__m128i) / sizeof(int16_t);
   constexpr int kNumRegs = sizeof(simd::Vepi16) / 8;
   std::array<__m128i, kNumRegs> regs;
 
   auto weights = reinterpret_cast<__m128i*>(&network->feature_weights);
-  auto biases = reinterpret_cast<__m128i*>(&network->feature_biases);
+  auto biases  = reinterpret_cast<__m128i*>(&network->feature_biases);
 
   for (int i = 0; i < nnue::arch::kInputBucketCount * 768 *
                           nnue::arch::kL1Size / kWeightsPerBlock;
@@ -69,6 +76,7 @@ std::unique_ptr<nnue::Network> ProcessNetwork(
   network->l3_biases = raw_network->l3_biases;
 
   // Transpose l1_weights from [b][l2][l1] to [b][l1][l2]
+  // (needed on every architecture)
   for (int b = 0; b < nnue::arch::kOutputBucketCount; b++) {
     for (int l1 = 0; l1 < nnue::arch::kL1Size; l1++) {
       for (int l2 = 0; l2 < nnue::arch::kL2Size; l2++) {
@@ -77,8 +85,10 @@ std::unique_ptr<nnue::Network> ProcessNetwork(
     }
   }
 
-#if BUILD_HAS_SIMD and !defined(SPARSE_PERMUTE)
-  // Weight permutation for DpbusdEpi32
+#if defined(BUILD_HAS_SIMD) && !defined(SPARSE_PERMUTE) && \
+    !defined(PRODUCE_AARCH64_NET) && \
+    (defined(__x86_64__) || defined(_M_X64) || defined(__i386) || defined(_M_IX86))
+  // x86-only: weight permutation for DpbusdEpi32
   {
     const auto tmp = std::make_shared<nnue::Network>(*network);
     for (int bucket = 0; bucket < nnue::arch::kOutputBucketCount; bucket++) {
@@ -96,6 +106,7 @@ std::unique_ptr<nnue::Network> ProcessNetwork(
 #endif
 
   // Transpose l2_weights from [b][l3][l2] to [b][l2][l3]
+  // (needed on every architecture)
   for (int b = 0; b < nnue::arch::kOutputBucketCount; b++) {
     for (int l2 = 0; l2 < nnue::arch::kL2Size; l2++) {
       for (int l3 = 0; l3 < nnue::arch::kL3Size; l3++) {
