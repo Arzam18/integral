@@ -33,9 +33,8 @@ jobs:
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_AVX2_BMI2=ON \
-            -DPREPROCESS_BUILD_AVX2_BMI2=ON \
             -DPRODUCE_AARCH64_NET=ON \
-            -DPREPROCESS_PRODUCE_AARCH64_NET=ON \
+            -DCMAKE_CXX_FLAGS="-DBUILD_AVX2_BMI2 -mavx2 -mbmi2 -mpopcnt" \
             -DEVALFILE="$(pwd)/../haxorus.nnue"
           make preprocess -j$(nproc)
           ./preprocess/preprocess "../haxorus.nnue" "processed_aarch64.nnue"
@@ -52,10 +51,9 @@ jobs:
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-24 \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_CXX_FLAGS="-DBUILD_HAS_NEON -DBUILD_ANDROID_NEON -DBUILD_ANDROID_AARCH64 -march=armv8.2-a+dotprod+fp+simd" \
-            -DBUILD_ANDROID_AARCH64=ON \
-            -DBUILD_ANDROID_NEON=ON \
-            -DBUILD_HAS_NEON=ON \
+            -DBUILD_NEON=ON \
+            -DBUILD_DOTPROD=ON \
+            -DCMAKE_CXX_FLAGS="-DBUILD_NEON -DBUILD_DOTPROD -march=armv8.2-a+dotprod+fp+simd" \
             -DEVALFILE="$(pwd)/../build_host/processed_aarch64.nnue"
           
           make integral -j$(nproc)
