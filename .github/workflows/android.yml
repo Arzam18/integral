@@ -20,50 +20,22 @@ jobs:
       - name: Install Build Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake ninja-build curl wget
+          sudo apt-get install -y build-essential cmake curl
 
-      - name: Download Network File
+      - name: Pre-download NNUE File
         run: |
           curl -L -o haxorus.nnue "https://github.com/aronpetko/integral-networks/releases/download/haxorus/haxorus.nnue"
 
-      - name: Stage 1 - Host Preprocess (Generate ARM64 NNUE)
+      - name: Run Jim Ablett's Android Build
         run: |
-          mkdir -p build_host
-          cd build_host
-          cmake .. \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_AVX2_BMI2=ON \
-            -DPRODUCE_AARCH64_NET=ON \
-            -DCMAKE_CXX_FLAGS="-DBUILD_AVX2_BMI2 -mavx2 -mbmi2 -mpopcnt" \
-            -DEVALFILE="$(pwd)/../haxorus.nnue"
-          make preprocess -j$(nproc)
-          ./preprocess/preprocess "../haxorus.nnue" "processed_aarch64.nnue"
-
-      - name: Stage 2 - Cross-Compile Engine for Android ARM64
-        run: |
-          mkdir -p build_android
-          cd build_android
+          # Add NDK toolchain binaries to PATH so Jim's Makefile can call aarch64-linux-android21-clang++
+          export PATH="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
           
-          NDK_TOOLCHAIN="$ANDROID_NDK_LATEST_HOME/build/cmake/android.toolchain.cmake"
-          
-          cmake .. \
-            -DCMAKE_TOOLCHAIN_FILE="$NDK_TOOLCHAIN" \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-24 \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_NEON=ON \
-            -DBUILD_DOTPROD=ON \
-            -DCMAKE_CXX_FLAGS="-DBUILD_NEON -DBUILD_DOTPROD -march=armv8.2-a+dotprod+fp+simd" \
-            -DEVALFILE="$(pwd)/../build_host/processed_aarch64.nnue"
-          
-          make integral -j$(nproc)
+          # Execute Jim's original two-stage Makefile build target
+          make android_aarch64 EVALFILE="haxorus.nnue"
 
-      - name: Package Binary Artifact
-        run: |
-          cp build_android/integral integral_v8_ja_aarch64
-
-      - name: Upload Android Executable Artifact
+      - name: Upload Binary Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: integral-v8-ja-aarch64
+          name: integral_v8_ja_aarch64
           path: integral_v8_ja_aarch64
