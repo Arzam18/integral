@@ -401,7 +401,8 @@ Score Searcher::QuiescentSearch(Thread &thread,
         history.correction_history->GetContEntry(state, move);
     stack->history_score = history.GetMoveScore(state, move, stack);
 
-    thread.nodes_searched.fetch_add(1, std::memory_order_relaxed);
+    auto searched = thread.nodes_searched.load(std::memory_order_relaxed);
+    thread.nodes_searched.store(searched + 1, std::memory_order_relaxed);
 
     board.MakeMove(move);
     const Score score =
@@ -612,7 +613,8 @@ Score Searcher::PVSearch(Thread &thread,
         tt_flag = TranspositionTableEntry::kExact;
       }
 
-      thread.tb_hits.fetch_add(1, std::memory_order_relaxed);
+      auto tb_hits = thread.tb_hits.load(std::memory_order_relaxed);
+      thread.tb_hits.store(tb_hits + 1, std::memory_order_relaxed);
 
       if (tt_flag == TranspositionTableEntry::kExact ||
           tt_flag == TranspositionTableEntry::kUpperBound && score <= alpha ||
@@ -1369,6 +1371,8 @@ void Searcher::SetThreadCount(U16 count) {
   stop_barrier_.Reset(count + 1);
   start_barrier_.Reset(count + 1);
 
+  correction_history_ = std::make_unique<history::CorrectionHistory>(count);
+
   raw_threads_.clear();
   raw_threads_.shrink_to_fit();
   raw_threads_.reserve(count);
@@ -1378,7 +1382,7 @@ void Searcher::SetThreadCount(U16 count) {
 
   for (U16 i = 0; i < count; i++) {
     raw_threads_.emplace_back([this, i]() {
-      threads_[i] = std::make_unique<Thread>(i);
+      threads_[i] = std::make_unique<Thread>(i, correction_history_.get());
       // Touch memory to enforce first-touch
       auto &thread = *threads_[i];
       thread.stack.Reset();
@@ -1455,6 +1459,11 @@ void Searcher::NewGame(bool clear_tables) {
   if (clear_tables) {
     transposition_table_.Clear(std::max<int>(1, threads_.size()));
     tables::kLateMoveReduction = tables::GenerateLateMoveReductionTable();
+  }
+
+  // Shared between every thread, so it's cleared once here
+  if (correction_history_) {
+    correction_history_->Clear();
   }
 
   for (auto &thread : threads_) {
