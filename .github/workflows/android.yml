@@ -32,8 +32,10 @@ jobs:
           cd build_host
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_NATIVE=ON \
+            -DBUILD_AVX2_BMI2=ON \
+            -DPREPROCESS_BUILD_AVX2_BMI2=ON \
             -DPRODUCE_AARCH64_NET=ON \
+            -DPREPROCESS_PRODUCE_AARCH64_NET=ON \
             -DEVALFILE="$(pwd)/../haxorus.nnue"
           make preprocess -j$(nproc)
           ./preprocess/preprocess "../haxorus.nnue" "processed_aarch64.nnue"
