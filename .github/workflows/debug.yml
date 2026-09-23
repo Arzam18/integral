@@ -1,0 +1,141 @@
+name: Debug aarch64 vs x86_64
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build-x86_64:
+    name: Build + test on x86_64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Download network
+        run: curl -fsSL -o piplup.nnue \
+          https://github.com/aronpetko/integral-networks/releases/download/piplup/piplup.nnue
+
+      - name: Build preprocess (x86 layout)
+        run: |
+          cmake -S preprocess -B build-pp-x86 -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_NATIVE=ON
+          cmake --build build-pp-x86 -j
+
+      - name: Build preprocess (aarch64 layout)
+        run: |
+          cmake -S preprocess -B build-pp-arm -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_NATIVE=ON \
+            -DPRODUCE_AARCH64_NET=ON
+          cmake --build build-pp-arm -j
+
+      - name: Produce both networks
+        run: |
+          ./build-pp-x86/preprocess piplup.nnue net-x86.nnue
+          ./build-pp-arm/preprocess piplup.nnue net-arm.nnue
+          ls -l net-x86.nnue net-arm.nnue
+
+      - name: Compare network files
+        run: |
+          if cmp -s net-x86.nnue net-arm.nnue; then
+            echo "::error title=LAYOUT BUG::net-x86.nnue and net-arm.nnue are IDENTICAL. PRODUCE_AARCH64_NET is not taking effect."
+            exit 1
+          else
+            echo "OK: network files differ (flag fired correctly)."
+            sha256sum net-x86.nnue net-arm.nnue
+          fi
+
+      - name: Build engine (x86_64)
+        run: |
+          cmake -S . -B build-x86 -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_NATIVE=ON \
+            -DEVALFILE="$PWD/net-x86.nnue"
+          cmake --build build-x86 --target integral -j
+
+      - name: Run engine (startpos)
+        run: |
+          printf 'uci\nisready\nposition startpos\ngo depth 15\nquit\n' \
+            | ./build-x86/integral > out-startpos.txt || true
+          grep -E '^(info depth|bestmove)' out-startpos.txt | tail -20
+
+      - name: Run engine (K+Q vs K)
+        run: |
+          printf 'uci\nisready\nposition fen 4k3/8/8/8/8/8/8/3QK3 w - - 0 1\ngo depth 12\nquit\n' \
+            | ./build-x86/integral > out-kq.txt || true
+          grep -E '^(info depth|bestmove)' out-kq.txt | tail -10
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debug-x86
+          path: |
+            net-x86.nnue
+            net-arm.nnue
+            out-startpos.txt
+            out-kq.txt
+            build-x86/integral
+
+  build-aarch64:
+    name: Build + test on aarch64
+    # GitHub's native ARM64 runner. If this label is not available in your
+    # repo's plan, replace with: runs-on: ubuntu-latest and prefix the
+    # engine-run steps with `qemu-aarch64 -L /usr/aarch64-linux-gnu`.
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Download network
+        run: curl -fsSL -o piplup.nnue \
+          https://github.com/aronpetko/integral-networks/releases/download/piplup/piplup.nnue
+
+      - name: Build preprocess (aarch64 layout)
+        run: |
+          cmake -S preprocess -B build-pp-arm -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_NATIVE=ON \
+            -DPRODUCE_AARCH64_NET=ON
+          cmake --build build-pp-arm -j
+
+      - name: Produce network
+        run: |
+          ./build-pp-arm/preprocess piplup.nnue net-arm.nnue
+          ls -l net-arm.nnue
+          sha256sum net-arm.nnue
+
+      - name: Build engine (aarch64)
+        run: |
+          cmake -S . -B build-arm -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_NATIVE=ON \
+            -DEVALFILE="$PWD/net-arm.nnue"
+          cmake --build build-arm --target integral -j
+
+      - name: Run engine (startpos)
+        run: |
+          printf 'uci\nisready\nposition startpos\ngo depth 15\nquit\n' \
+            | ./build-arm/integral > out-startpos.txt || true
+          grep -E '^(info depth|bestmove)' out-startpos.txt | tail -20
+
+      - name: Run engine (K+Q vs K)
+        run: |
+          printf 'uci\nisready\nposition fen 4k3/8/8/8/8/8/8/3QK3 w - - 0 1\ngo depth 12\nquit\n' \
+            | ./build-arm/integral > out-kq.txt || true
+          grep -E '^(info depth|bestmove)' out-kq.txt | tail -10
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debug-arm
+          path: |
+            net-arm.nnue
+            out-startpos.txt
+            out-kq.txt
+            build-arm/integral
