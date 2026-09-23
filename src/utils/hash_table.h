@@ -75,7 +75,7 @@ inline std::size_t LargePageSize() {
   }
 
   void* ptr = nullptr;
-#if defined(__APPLE__)
+#if defined(__APPLE__) || (defined(__ANDROID__) && __ANDROID_API__ < 28)
   if (posix_memalign(&ptr, alignment, size)) throw std::bad_alloc();
 #else
   ptr = std::aligned_alloc(alignment, size);
