@@ -19,7 +19,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ninja-build
 
       - name: Download network
-  run: curl -fsSL -o piplup.nnue https://github.com/aronpetko/integral-networks/releases/download/piplup/piplup.nnue
+        run: curl -fsSL -o piplup.nnue https://github.com/aronpetko/integral-networks/releases/download/piplup/piplup.nnue
+
       - name: Build preprocess (x86 layout)
         run: |
           cmake -S preprocess -B build-pp-x86 -G Ninja \
@@ -80,9 +81,6 @@ jobs:
 
   build-aarch64:
     name: Build + test on aarch64
-    # GitHub's native ARM64 runner. If this label is not available in your
-    # repo's plan, replace with: runs-on: ubuntu-latest and prefix the
-    # engine-run steps with `qemu-aarch64 -L /usr/aarch64-linux-gnu`.
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
@@ -94,8 +92,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ninja-build
 
       - name: Download network
-        run: curl -fsSL -o piplup.nnue \
-          https://github.com/aronpetko/integral-networks/releases/download/piplup/piplup.nnue
+        run: curl -fsSL -o piplup.nnue https://github.com/aronpetko/integral-networks/releases/download/piplup/piplup.nnue
 
       - name: Build preprocess (aarch64 layout)
         run: |
