@@ -85,6 +85,16 @@
 #define BUILD_HAS_BMI1 0
 #define BUILD_HAS_POPCNT 1
 #define BUILD_HAS_NEON 0
+#elif defined(BUILD_ANDROID_NEON)
+#define BUILD_HAS_BMI2 0
+#define BUILD_HAS_AVX512VBMI 0
+#define BUILD_HAS_AVX512VNNI 0
+#define BUILD_HAS_AVX512 0
+#define BUILD_HAS_AVX2 0
+#define BUILD_HAS_SSE41 0
+#define BUILD_HAS_BMI1 0
+#define BUILD_HAS_POPCNT 0
+#define BUILD_HAS_NEON 1
 #else
 #error No architecture specified
 #endif
