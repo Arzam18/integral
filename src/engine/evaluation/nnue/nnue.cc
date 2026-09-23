@@ -59,10 +59,16 @@ Score Evaluate(Board &board) {
 
   const auto quantise_vector = simd::Set<I16>(arch::kFtQuantization);
 
-  std::array<U16, arch::kL1Size / 4> nnz_indices;
+  // +8 slack: the 8-wide Store below always writes 8 U16s, but on NEON only
+  // kI32Lanes == 4 of them are meaningful. Without slack the trailing store
+  // writes past the end of the buffer.
+  std::array<U16, arch::kL1Size / 4 + 8> nnz_indices;
   int nnz_count = 0;
   auto nnz_base = simd::Zero<U16, 8>();
-  const auto lookup_increment = simd::Set<U16, 8>(8);
+  // Number of mask bits handled per inner chunk: 8 on AVX2/AVX512, 4 on NEON.
+  constexpr int kChunkBits =
+      simd::kNativeLanes<I32> < 8 ? simd::kNativeLanes<I32> : 8;
+  const auto lookup_increment = simd::Set<U16, 8>(kChunkBits);
 
   // Activate the feature layer neurons
   alignas(simd::kAlignment) std::array<U8, arch::kL1Size> feature_output;
@@ -125,7 +131,7 @@ Score Evaluate(Board &board) {
         // Each bit in `nnz_mask` corresponds to whether a specific feature is
         // positive (1) or zero (0)
         const auto nnz_mask = simd::NonZeroMask(simd::Cast<I32>(features));
-        // Loop through 8-bit (U8) slices of this 16-bit mask
+        // Loop through 8-bit (U8) slices of this mask
         for (int chunk = 0; chunk < kI32Lanes; chunk += 8) {
           // Extract the 8-bit slice from the mask
           const U8 slice = (nnz_mask >> chunk) & 0b11111111;
