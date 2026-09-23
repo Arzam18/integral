@@ -18,7 +18,7 @@ std::unique_ptr<nnue::Network> ProcessNetwork(
   network->feature_biases = raw_network->feature_biases;
   network->threat_weights = raw_network->threat_weights;
 
-#if BUILD_HAS_SIMD and !defined(SPARSE_PERMUTE)
+#if BUILD_HAS_SIMD and !defined(SPARSE_PERMUTE) and !defined(PRODUCE_AARCH64_NET)  // <-- CHANGED
   constexpr int kWeightsPerBlock = sizeof(__m128i) / sizeof(int16_t);
   constexpr int kNumRegs = sizeof(simd::Vepi16) / 8;
   std::array<__m128i, kNumRegs> regs;
@@ -77,7 +77,7 @@ std::unique_ptr<nnue::Network> ProcessNetwork(
     }
   }
 
-#if BUILD_HAS_SIMD and !defined(SPARSE_PERMUTE)
+#if BUILD_HAS_SIMD and !defined(SPARSE_PERMUTE) and !defined(PRODUCE_AARCH64_NET)  // <-- CHANGED
   // Weight permutation for DpbusdEpi32
   {
     const auto tmp = std::make_shared<nnue::Network>(*network);
