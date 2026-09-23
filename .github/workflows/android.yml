@@ -1,0 +1,107 @@
+name: Android
+
+on:
+  push:
+    branches: [ main, master ]
+    paths-ignore: [ '**.md' ]
+  pull_request:
+    paths-ignore: [ '**.md' ]
+  workflow_dispatch:
+
+env:
+  NETWORK_NAME: piplup
+  NETWORK_URL:  https://github.com/aronpetko/integral-networks/releases/download/piplup/piplup.nnue
+  NDK_VERSION:  r27c
+
+jobs:
+  build-android:
+    name: Android ${{ matrix.abi }} (API ${{ matrix.api }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            api: 24
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Setup NDK
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+          add-to-path: true
+
+      - name: Setup CMake
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: '3.29.x'
+
+      - name: Install Ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Download network
+        run: |
+          curl -fsSL -o ${{ env.NETWORK_NAME }}.nnue "${NETWORK_URL}"
+          ls -l ${{ env.NETWORK_NAME }}.nnue
+
+      # -------- Stage 1: host preprocess into aarch64 layout --------
+      - name: Build host preprocess
+        run: |
+          cmake -S preprocess -B build-preprocess -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_NATIVE=ON \
+            -DPRODUCE_AARCH64_NET=ON
+          cmake --build build-preprocess --target preprocess -j
+
+      - name: Preprocess network (aarch64 layout)
+        run: |
+          ./build-preprocess/preprocess ${{ env.NETWORK_NAME }}.nnue processed.nnue
+          ls -l processed.nnue
+          file processed.nnue || true
+
+      # -------- Stage 2: cross-compile integral --------
+      - name: Configure Android build
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          cmake -S . -B build-android -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=${{ matrix.abi }} \
+            -DANDROID_PLATFORM=android-${{ matrix.api }} \
+            -DANDROID_STL=c++_static \
+            -DANDROID_ARM_NEON=ON \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_ANDROID_AARCH64=ON \
+            -DEVALFILE="$PWD/processed.nnue"
+
+      - name: Build integral
+        run: cmake --build build-android --target integral -j
+
+      - name: Verify ELF
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          file build-android/integral
+          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" \
+            -h build-android/integral | sed -n '1,20p'
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp build-android/integral dist/integral-${{ matrix.abi }}
+          (cd dist && sha256sum integral-${{ matrix.abi }} > integral-${{ matrix.abi }}.sha256)
+          ls -l dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: integral-android-${{ matrix.abi }}
+          path: dist/*
+          if-no-files-found: error
