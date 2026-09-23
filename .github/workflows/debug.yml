@@ -19,9 +19,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ninja-build
 
       - name: Download network
-        run: curl -fsSL -o piplup.nnue \
-          https://github.com/aronpetko/integral-networks/releases/download/piplup/piplup.nnue
-
+  run: curl -fsSL -o piplup.nnue https://github.com/aronpetko/integral-networks/releases/download/piplup/piplup.nnue
       - name: Build preprocess (x86 layout)
         run: |
           cmake -S preprocess -B build-pp-x86 -G Ninja \
