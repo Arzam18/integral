@@ -85,6 +85,16 @@
 #define BUILD_HAS_BMI1 0
 #define BUILD_HAS_POPCNT 1
 #define BUILD_HAS_NEON 0
+#elif defined(BUILD_ANDROID_NEON)
+#define BUILD_HAS_BMI2 0
+#define BUILD_HAS_AVX512VBMI 0
+#define BUILD_HAS_AVX512VNNI 0
+#define BUILD_HAS_AVX512 0
+#define BUILD_HAS_AVX2 0
+#define BUILD_HAS_SSE41 0
+#define BUILD_HAS_BMI1 0
+#define BUILD_HAS_POPCNT 0
+#define BUILD_HAS_NEON 1
 #else
 #error No architecture specified
 #endif
@@ -495,6 +505,11 @@ constexpr int kPackusOrder[2] = {0, 1};
       _mm_maddubs_epi16(std::bit_cast<__m128i>(u), std::bit_cast<__m128i>(i));
   return sum +
          std::bit_cast<Vepi32>(_mm_madd_epi16(product, _mm_set1_epi16(1)));
+#elif BUILD_HAS_NEON
+  // ARMv8.2-A dot-product implementation. This is the NEON equivalent of
+  // Intel's DPBUSD: four unsigned 8-bit values multiplied by four signed
+  // 8-bit values and accumulated into each signed 32-bit lane.
+  return vdotq_s32(sum, u, i);
 #else
   for (std::size_t j = 0; j < kNativeLanes<I32>; ++j)
     for (std::size_t k = 0; k < 4; ++k)
@@ -531,6 +546,12 @@ constexpr int kPackusOrder[2] = {0, 1};
       _mm_maddubs_epi16(std::bit_cast<__m128i>(u2), std::bit_cast<__m128i>(i2));
   return sum + std::bit_cast<Vepi32>(
                    _mm_madd_epi16(_mm_adds_epi16(p1, p2), _mm_set1_epi16(1)));
+#elif BUILD_HAS_NEON
+  // Diagnostic attempt 1: keep the two dot products separate so the NEON
+  // test uses the exact same scalar arithmetic as DpbusdEpi32.
+  sum = DpbusdEpi32(sum, u1, i1);
+  sum = DpbusdEpi32(sum, u2, i2);
+  return sum;
 #else
   return DpbusdEpi32(DpbusdEpi32(sum, u1, i1), u2, i2);
 #endif
@@ -548,9 +569,14 @@ constexpr int kPackusOrder[2] = {0, 1};
   return U16(_mm_movemask_ps(_mm_castsi128_ps(
       _mm_cmpgt_epi32(std::bit_cast<__m128i>(v), _mm_setzero_si128()))));
 #else
+  // A packed U8 feature vector is reinterpreted as I32 here.  Testing
+  // `v[i] > 0` is incorrect: if the highest byte of an I32 lane has its
+  // high bit set (for example a feature value >= 128), the packed I32 is
+  // negative even though the U8 feature is non-zero.  The sparse path only
+  // needs to know whether the packed lane is zero, so use equality instead.
   U16 mask = 0;
   for (std::size_t i = 0; i < kNativeLanes<I32>; ++i)
-    mask |= U16(v[i] > 0) << i;
+    mask |= U16(v[i] != 0) << i;
   return mask;
 #endif
 }
