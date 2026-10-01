@@ -1,0 +1,105 @@
+name: Android NEON Diagnostic
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  NETWORK_NAME: zapdos
+  NETWORK_URL: https://github.com/aronpetko/integral-networks/releases/download/zapdos/zapdos.nnue
+  NDK_VERSION: r27c
+
+jobs:
+  build-neon:
+    name: Android ARM64 NEON diagnostic
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+      - name: Setup NDK
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+          add-to-path: true
+      - name: Setup CMake
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: '3.29.x'
+      - name: Install Ninja
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+      - name: Verify source network selection
+        run: |
+          set -euo pipefail
+          SOURCE_NETWORK="$(sed -n 's/^set(NETWORK_NAME[[:space:]]\+\([^)]*\)).*/\1/p' CMakeLists.txt | head -n1)"
+          echo "CMake network: ${SOURCE_NETWORK}"
+          test "${SOURCE_NETWORK}" = "${NETWORK_NAME}"
+      - name: Download and verify Zapdos
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 -o "${NETWORK_NAME}.nnue" "${NETWORK_URL}"
+          stat -c 'Zapdos raw size: %s bytes' "${NETWORK_NAME}.nnue"
+          sha256sum "${NETWORK_NAME}.nnue" | tee network.sha256
+      - name: Build host preprocessor
+        run: |
+          set -euo pipefail
+          cmake -S preprocess -B build-preprocess -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_NATIVE=ON \
+            -DPRODUCE_AARCH64_NET=ON
+          cmake --build build-preprocess --target preprocess -j"$(nproc)"
+      - name: Preprocess Zapdos
+        run: |
+          set -euo pipefail
+          ./build-preprocess/preprocess "${NETWORK_NAME}.nnue" processed.nnue
+          stat -c 'Zapdos processed size: %s bytes' processed.nnue
+          sha256sum processed.nnue | tee processed-network.sha256
+      - name: Configure ARM64 NEON
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-neon -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-24 \
+            -DANDROID_STL=c++_static \
+            -DANDROID_ARM_NEON=ON \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_ANDROID_AARCH64=ON \
+            -DEVALFILE="$PWD/processed.nnue"
+      - name: Build NEON diagnostic
+        run: |
+          set -euo pipefail
+          cmake --build build-neon --target integral -j"$(nproc)"
+      - name: Verify binary
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          set -euo pipefail
+          file build-neon/integral
+          file build-neon/integral | grep -qi 'ARM aarch64'
+          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -h build-neon/integral
+      - name: Package
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp build-neon/integral dist/integral-arm64-neon-diagnostic
+          cp network.sha256 dist/zapdos-raw.sha256
+          cp processed-network.sha256 dist/zapdos-processed.sha256
+          sha256sum dist/integral-arm64-neon-diagnostic > dist/binary.sha256
+          ls -lh dist
+      - name: Upload NEON diagnostic
+        uses: actions/upload-artifact@v4
+        with:
+          name: integral-android-neon-diagnostic
+          path: dist/*
+          if-no-files-found: error

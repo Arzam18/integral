@@ -1,1 +1,225 @@
-.
+name: Android Scalar (temporary)
+
+on:
+  workflow_dispatch:
+
+env:
+  # Network matching the current Integral source
+  NETWORK_NAME: zapdos
+  NETWORK_URL: https://github.com/aronpetko/integral-networks/releases/download/zapdos/zapdos.nnue
+
+  # Android NDK
+  NDK_VERSION: r27c
+
+jobs:
+  build-android:
+    name: Android ${{ matrix.abi }} (API ${{ matrix.api }})
+
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+
+      matrix:
+        include:
+          - abi: arm64-v8a
+            api: 24
+
+    steps:
+
+      # ============================================================
+      # Checkout
+      # ============================================================
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      # ============================================================
+      # Android NDK
+      # ============================================================
+      - name: Setup NDK
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+          add-to-path: true
+
+      # ============================================================
+      # CMake
+      # ============================================================
+      - name: Setup CMake
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: '3.29.x'
+
+      # ============================================================
+      # Ninja
+      # ============================================================
+      - name: Install Ninja
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+
+      # ============================================================
+      # Download Integral network
+      # ============================================================
+      - name: Download network
+        run: |
+          set -euo pipefail
+
+          echo "Downloading ${NETWORK_NAME}.nnue"
+
+          curl -fL \
+            -o "${NETWORK_NAME}.nnue" \
+            "${NETWORK_URL}"
+
+          echo
+          echo "Downloaded network:"
+          ls -lh "${NETWORK_NAME}.nnue"
+          file "${NETWORK_NAME}.nnue"
+
+      # ============================================================
+      # Build host-side network preprocessor
+      #
+      # The preprocessor runs on the x86-64 GitHub runner.
+      #
+      # PRODUCE_AARCH64_NET=ON keeps the Android/AArch64 network
+      # layout instead of applying the x86-specific permutation.
+      # ============================================================
+      - name: Build host preprocess
+        run: |
+          set -euo pipefail
+
+          cmake \
+            -S preprocess \
+            -B build-preprocess \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_NATIVE=ON \
+            -DPRODUCE_AARCH64_NET=ON
+
+          cmake \
+            --build build-preprocess \
+            --target preprocess \
+            -j"$(nproc)"
+
+      # ============================================================
+      # Preprocess network
+      # ============================================================
+      - name: Preprocess network
+        run: |
+          set -euo pipefail
+
+          echo "Preprocessing ${NETWORK_NAME}.nnue"
+
+          ./build-preprocess/preprocess \
+            "${NETWORK_NAME}.nnue" \
+            processed.nnue
+
+          echo
+          echo "Processed network:"
+          ls -lh processed.nnue
+          file processed.nnue
+
+      # ============================================================
+      # Configure Android ARM64 build
+      # ============================================================
+      - name: Configure Android build
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+
+        run: |
+          set -euo pipefail
+
+          cmake \
+            -S . \
+            -B build-android \
+            -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI="${{ matrix.abi }}" \
+            -DANDROID_PLATFORM="android-${{ matrix.api }}" \
+            -DANDROID_STL=c++_static \
+            -DANDROID_ARM_NEON=ON \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_ANDROID_AARCH64=ON \
+            -DEVALFILE="$PWD/processed.nnue"
+
+      # ============================================================
+      # Build Integral
+      # ============================================================
+      - name: Build Integral
+        run: |
+          set -euo pipefail
+
+          cmake \
+            --build build-android \
+            --target integral \
+            -j"$(nproc)"
+
+      # ============================================================
+      # Verify ELF
+      # ============================================================
+      - name: Verify ELF
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+
+        run: |
+          set -euo pipefail
+
+          echo "Binary information:"
+          file build-android/integral
+
+          echo
+          echo "ELF header:"
+
+          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" \
+            -h build-android/integral
+
+      # ============================================================
+      # Verify architecture
+      # ============================================================
+      - name: Check binary architecture
+        run: |
+          set -euo pipefail
+
+          file build-android/integral | tee binary-info.txt
+
+          grep -qi "ARM aarch64" binary-info.txt
+
+      # ============================================================
+      # Package
+      # ============================================================
+      - name: Package
+        run: |
+          set -euo pipefail
+
+          mkdir -p dist
+
+          cp \
+            build-android/integral \
+            "dist/integral-${{ matrix.abi }}"
+
+          (
+            cd dist
+            sha256sum \
+              "integral-${{ matrix.abi }}" \
+              > "integral-${{ matrix.abi }}.sha256"
+          )
+
+          echo
+          echo "Final artifacts:"
+          ls -lh dist
+
+      # ============================================================
+      # Upload artifact
+      # ============================================================
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: integral-android-${{ matrix.abi }}
+          path: dist/*
+          if-no-files-found: error
