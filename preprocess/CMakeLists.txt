@@ -11,6 +11,9 @@ option(BUILD_SSE41_POPCNT "Build with SSE4.1 + POPCNT optimizations" ${PREPROCES
 option(BUILD_DEBUG "Build with debug information" ${PREPROCESS_BUILD_DEBUG})
 option(SPARSE_PERMUTE "Use sparse permute network format" ${PREPROCESS_SPARSE_PERMUTE})
 
+# Produce network layout suitable for the Android AArch64 NEON runtime.
+option(PRODUCE_AARCH64_NET "Produce aarch64 network layout" ${PREPROCESS_PRODUCE_AARCH64_NET})
+
 # Architecture-specific flags
 set(CXXFLAGS_NATIVE "-march=native")
 set(CXXFLAGS_VNNI512 "-march=znver4 -mtune=znver4 -DBUILD_VNNI512 -DBUILD_FAST_PEXT")
