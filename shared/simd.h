@@ -456,6 +456,9 @@ constexpr int kPackusOrder[2] = {0, 1};
 #elif BUILD_HAS_SSE41
   return std::bit_cast<Vepi16>(
       _mm_mulhi_epi16(std::bit_cast<__m128i>(a), std::bit_cast<__m128i>(b)));
+#elif BUILD_HAS_NEON
+  return std::bit_cast<Vepi16>(vmulhq_s16(
+      std::bit_cast<int16x8_t>(a), std::bit_cast<int16x8_t>(b)));
 #else
   Vepi16 out{};
   for (std::size_t i = 0; i < kNativeLanes<I16>; ++i)
@@ -474,6 +477,10 @@ constexpr int kPackusOrder[2] = {0, 1};
 #elif BUILD_HAS_SSE41
   return std::bit_cast<Vepu8>(
       _mm_packus_epi16(std::bit_cast<__m128i>(a), std::bit_cast<__m128i>(b)));
+#elif BUILD_HAS_NEON
+  const auto lo = vqmovun_s16(std::bit_cast<int16x8_t>(a));
+  const auto hi = vqmovun_s16(std::bit_cast<int16x8_t>(b));
+  return std::bit_cast<Vepu8>(vcombine_u8(lo, hi));
 #else
   constexpr std::size_t kHalf = kNativeLanes<I16>;
   Vepu8 out{};
@@ -506,10 +513,13 @@ constexpr int kPackusOrder[2] = {0, 1};
   return sum +
          std::bit_cast<Vepi32>(_mm_madd_epi16(product, _mm_set1_epi16(1)));
 #elif BUILD_HAS_NEON
-  // ARMv8.2-A dot-product implementation. This is the NEON equivalent of
-  // Intel's DPBUSD: four unsigned 8-bit values multiplied by four signed
-  // 8-bit values and accumulated into each signed 32-bit lane.
-  return vdotq_s32(sum, u, i);
+  // ARMv8.2-A dot product: 16 x U8 * I8 -> 4 x I32.
+  // The Android build is compiled with +dotprod, so use the hardware
+  // instruction instead of the scalar emulation used by the fallback.
+  return std::bit_cast<Vepi32>(vdotq_s32(
+      std::bit_cast<int32x4_t>(sum),
+      std::bit_cast<uint8x16_t>(u),
+      std::bit_cast<int8x16_t>(i)));
 #else
   for (std::size_t j = 0; j < kNativeLanes<I32>; ++j)
     for (std::size_t k = 0; k < 4; ++k)
@@ -547,11 +557,10 @@ constexpr int kPackusOrder[2] = {0, 1};
   return sum + std::bit_cast<Vepi32>(
                    _mm_madd_epi16(_mm_adds_epi16(p1, p2), _mm_set1_epi16(1)));
 #elif BUILD_HAS_NEON
-  // Diagnostic attempt 1: keep the two dot products separate so the NEON
-  // test uses the exact same scalar arithmetic as DpbusdEpi32.
+  // Two independent ARM dot-product instructions, preserving the exact
+  // non-saturating U8 x I8 -> I32 semantics of DpbusdEpi32.
   sum = DpbusdEpi32(sum, u1, i1);
-  sum = DpbusdEpi32(sum, u2, i2);
-  return sum;
+  return DpbusdEpi32(sum, u2, i2);
 #else
   return DpbusdEpi32(DpbusdEpi32(sum, u1, i1), u2, i2);
 #endif
