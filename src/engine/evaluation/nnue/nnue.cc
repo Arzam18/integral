@@ -49,6 +49,8 @@ Score Evaluate(Board &board) {
   const auto bucket = accumulator.GetOutputBucket(state);
   const int hmc_bucket = GetHmcBucket(state.fifty_moves_clock);
 
+  // Use the SIMD NNUE path when available; the scalar implementation remains
+  // the fallback for targets without SIMD support.
   constexpr int kFtShift = 9;
 
 #if BUILD_HAS_SIMD and !defined(SPARSE_PERMUTE)
