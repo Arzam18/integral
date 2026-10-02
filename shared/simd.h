@@ -456,9 +456,6 @@ constexpr int kPackusOrder[2] = {0, 1};
 #elif BUILD_HAS_SSE41
   return std::bit_cast<Vepi16>(
       _mm_mulhi_epi16(std::bit_cast<__m128i>(a), std::bit_cast<__m128i>(b)));
-#elif BUILD_HAS_NEON
-  return std::bit_cast<Vepi16>(vmulhq_s16(
-      std::bit_cast<int16x8_t>(a), std::bit_cast<int16x8_t>(b)));
 #else
   Vepi16 out{};
   for (std::size_t i = 0; i < kNativeLanes<I16>; ++i)
@@ -477,10 +474,6 @@ constexpr int kPackusOrder[2] = {0, 1};
 #elif BUILD_HAS_SSE41
   return std::bit_cast<Vepu8>(
       _mm_packus_epi16(std::bit_cast<__m128i>(a), std::bit_cast<__m128i>(b)));
-#elif BUILD_HAS_NEON
-  const auto lo = vqmovun_s16(std::bit_cast<int16x8_t>(a));
-  const auto hi = vqmovun_s16(std::bit_cast<int16x8_t>(b));
-  return std::bit_cast<Vepu8>(vcombine_u8(lo, hi));
 #else
   constexpr std::size_t kHalf = kNativeLanes<I16>;
   Vepu8 out{};
@@ -513,13 +506,19 @@ constexpr int kPackusOrder[2] = {0, 1};
   return sum +
          std::bit_cast<Vepi32>(_mm_madd_epi16(product, _mm_set1_epi16(1)));
 #elif BUILD_HAS_NEON
-  // ARMv8.2-A dot product: 16 x U8 * I8 -> 4 x I32.
-  // The Android build is compiled with +dotprod, so use the hardware
-  // instruction instead of the scalar emulation used by the fallback.
-  return std::bit_cast<Vepi32>(vdotq_s32(
-      std::bit_cast<int32x4_t>(sum),
-      std::bit_cast<uint8x16_t>(u),
-      std::bit_cast<int8x16_t>(i)));
+  // ARMv8.2-A DOTPROD computes signed-byte products.  The NNUE operation
+  // needs U8 x I8, so bias the U8 operand by XORing bit 7.  If s = int8(u ^
+  // 0x80), then u = s + 128.  Therefore the exact unsigned dot product is
+  // dot(s, i) + 128 * sum(i), independently for each group of four bytes.
+  const auto biased_u = vreinterpretq_s8_u8(
+      veorq_u8(std::bit_cast<uint8x16_t>(u), vdupq_n_u8(0x80)));
+  const auto signed_dot = vdotq_s32(
+      std::bit_cast<int32x4_t>(sum), biased_u, std::bit_cast<int8x16_t>(i));
+  const auto ones = vdupq_n_s8(1);
+  const auto correction = vdotq_s32(vdupq_n_s32(0), ones,
+                                     std::bit_cast<int8x16_t>(i));
+  return std::bit_cast<Vepi32>(
+      vaddq_s32(signed_dot, vmulq_n_s32(correction, 128)));
 #else
   for (std::size_t j = 0; j < kNativeLanes<I32>; ++j)
     for (std::size_t k = 0; k < 4; ++k)
@@ -557,10 +556,9 @@ constexpr int kPackusOrder[2] = {0, 1};
   return sum + std::bit_cast<Vepi32>(
                    _mm_madd_epi16(_mm_adds_epi16(p1, p2), _mm_set1_epi16(1)));
 #elif BUILD_HAS_NEON
-  // Two independent ARM dot-product instructions, preserving the exact
-  // non-saturating U8 x I8 -> I32 semantics of DpbusdEpi32.
-  sum = DpbusdEpi32(sum, u1, i1);
-  return DpbusdEpi32(sum, u2, i2);
+  // Keep the two exact mixed-sign dot products independent.  DpbusdEpi32()
+  // performs the U8 x I8 correction required by ARM DOTPROD.
+  return DpbusdEpi32(DpbusdEpi32(sum, u1, i1), u2, i2);
 #else
   return DpbusdEpi32(DpbusdEpi32(sum, u1, i1), u2, i2);
 #endif
