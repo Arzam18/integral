@@ -25,7 +25,7 @@ option(BUILD_ANDROID_AARCH64 "Build for Android via NDK with NEON/dotprod optimi
 option(BUILD_DEBUG "Build with debug information" OFF)
 
 # Allow user to specify EVALFILE through CMake
-set(NETWORK_NAME zapdos)
+set(NETWORK_NAME yveltal)
 set(EVALFILE "${EVALFILE}" CACHE STRING "Path to the evaluation (.nnue) file")
 set(NNUE_URL "https://github.com/aronpetko/integral-networks/releases/download/${NETWORK_NAME}/${NETWORK_NAME}.nnue")
 set(NNUE_PATH "${PROJECT_SOURCE_DIR}/${NETWORK_NAME}.nnue")
