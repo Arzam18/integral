@@ -1,105 +1,173 @@
-name: Android NEON Diagnostic
+
+name: Integral Android ARM64
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/android.yml"
 
 permissions:
   contents: read
 
 env:
-  NETWORK_NAME: zapdos
-  NETWORK_URL: https://github.com/aronpetko/integral-networks/releases/download/zapdos/zapdos.nnue
+  NETWORK_NAME: yveltal
+  NETWORK_URL: https://github.com/aronpetko/integral-networks/releases/download/yveltal/yveltal.nnue
   NDK_VERSION: r27c
 
 jobs:
-  build-neon:
-    name: Android ARM64 NEON diagnostic
-    runs-on: ubuntu-latest
+  build-android:
+    name: Integral ARM64 Android
+    runs-on: ubuntu-24.04
+
     steps:
-      - name: Checkout
+      - name: Checkout source
         uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 1
-      - name: Setup NDK
-        id: ndk
+
+      - name: Set up Android NDK
         uses: nttld/setup-ndk@v1
+        id: ndk
         with:
           ndk-version: ${{ env.NDK_VERSION }}
           add-to-path: true
-      - name: Setup CMake
+
+      - name: Set up CMake
         uses: jwlawson/actions-setup-cmake@v2
         with:
-          cmake-version: '3.29.x'
+          cmake-version: "3.29.x"
+
       - name: Install Ninja
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y ninja-build
-      - name: Verify source network selection
+
+      - name: Download and validate NNUE
         run: |
           set -euo pipefail
-          SOURCE_NETWORK="$(sed -n 's/^set(NETWORK_NAME[[:space:]]\+\([^)]*\)).*/\1/p' CMakeLists.txt | head -n1)"
-          echo "CMake network: ${SOURCE_NETWORK}"
-          test "${SOURCE_NETWORK}" = "${NETWORK_NAME}"
-      - name: Download and verify Zapdos
+
+          echo "Integral network: ${NETWORK_NAME}"
+
+          curl --fail --location --retry 3 \
+            --output "${NETWORK_NAME}.nnue" \
+            "${NETWORK_URL}"
+
+          test -s "${NETWORK_NAME}.nnue"
+          file "${NETWORK_NAME}.nnue"
+          ls -lh "${NETWORK_NAME}.nnue"
+
+          if head -c 256 "${NETWORK_NAME}.nnue" |
+             grep -Eqi '<!doctype html|<html'; then
+            echo "::error::Downloaded an HTML page instead of an NNUE network."
+            exit 1
+          fi
+
+      - name: Build host network preprocessor
         run: |
           set -euo pipefail
-          curl -fL --retry 3 -o "${NETWORK_NAME}.nnue" "${NETWORK_URL}"
-          stat -c 'Zapdos raw size: %s bytes' "${NETWORK_NAME}.nnue"
-          sha256sum "${NETWORK_NAME}.nnue" | tee network.sha256
-      - name: Build host preprocessor
-        run: |
-          set -euo pipefail
-          cmake -S preprocess -B build-preprocess -G Ninja \
+
+          cmake \
+            -S preprocess \
+            -B build-preprocess \
+            -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_NATIVE=ON \
             -DPRODUCE_AARCH64_NET=ON
-          cmake --build build-preprocess --target preprocess -j"$(nproc)"
-      - name: Preprocess Zapdos
+
+          cmake --build build-preprocess \
+            --target preprocess \
+            --parallel "$(nproc)"
+
+          test -x build-preprocess/preprocess
+
+      - name: Preprocess ARM64 network
         run: |
           set -euo pipefail
-          ./build-preprocess/preprocess "${NETWORK_NAME}.nnue" processed.nnue
-          stat -c 'Zapdos processed size: %s bytes' processed.nnue
-          sha256sum processed.nnue | tee processed-network.sha256
-      - name: Configure ARM64 NEON
+
+          ./build-preprocess/preprocess \
+            "${NETWORK_NAME}.nnue" \
+            "${GITHUB_WORKSPACE}/processed.nnue"
+
+          test -s processed.nnue
+          echo "Preprocessed network:"
+          ls -lh processed.nnue
+          file processed.nnue
+
+      - name: Configure Android ARM64 build
         env:
           ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
         run: |
           set -euo pipefail
-          cmake -S . -B build-neon -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+
+          echo "CMake network: ${NETWORK_NAME}"
+          echo "Using preprocessed network: ${GITHUB_WORKSPACE}/processed.nnue"
+
+          # The source's Android flags include -fsee, which is not
+          # a supported Clang option. Remove it for the Android build.
+          sed -i 's/ -fsee / /g' CMakeLists.txt
+
+          cmake \
+            -S . \
+            -B build-android \
+            -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake" \
+            -DCMAKE_MAKE_PROGRAM="$(command -v ninja)" \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-24 \
             -DANDROID_STL=c++_static \
             -DANDROID_ARM_NEON=ON \
             -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_NATIVE=OFF \
             -DBUILD_ANDROID_AARCH64=ON \
-            -DEVALFILE="$PWD/processed.nnue"
-      - name: Build NEON diagnostic
+            -DUSE_NUMA=OFF \
+            -DEVALFILE="${GITHUB_WORKSPACE}/processed.nnue"
+
+      - name: Compile Integral
         run: |
           set -euo pipefail
-          cmake --build build-neon --target integral -j"$(nproc)"
-      - name: Verify binary
+
+          cmake --build build-android \
+            --target integral \
+            --parallel "$(nproc)"
+
+          test -s build-android/integral
+
+      - name: Verify ARM64 executable
         env:
           ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
         run: |
           set -euo pipefail
-          file build-neon/integral
-          file build-neon/integral | grep -qi 'ARM aarch64'
-          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -h build-neon/integral
-      - name: Package
+
+          BINARY="build-android/integral"
+          READELF="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+
+          file "$BINARY"
+          "$READELF" -h "$BINARY" | tee elf-header.txt
+
+          grep -q 'AArch64' elf-header.txt
+          grep -q 'EXEC' elf-header.txt
+
+          echo "ARM64 executable verification passed."
+
+      - name: Package executable
         run: |
           set -euo pipefail
+
           mkdir -p dist
-          cp build-neon/integral dist/integral-arm64-neon-diagnostic
-          cp network.sha256 dist/zapdos-raw.sha256
-          cp processed-network.sha256 dist/zapdos-processed.sha256
-          sha256sum dist/integral-arm64-neon-diagnostic > dist/binary.sha256
-          ls -lh dist
-      - name: Upload NEON diagnostic
+          cp build-android/integral dist/integral-arm64-v8a
+
+          cd dist
+          sha256sum integral-arm64-v8a \
+            > integral-arm64-v8a.sha256
+
+          ls -lh
+
+      - name: Upload Android engine
         uses: actions/upload-artifact@v4
         with:
-          name: integral-android-neon-diagnostic
+          name: integral-android-arm64-v8a
           path: dist/*
           if-no-files-found: error
