@@ -49,21 +49,21 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "Integral network: ${NETWORK_NAME}"
+          echo "CMake network: ${NETWORK_NAME}"
 
           curl --fail --location --retry 3 \
             --output "${NETWORK_NAME}.nnue" \
             "${NETWORK_URL}"
 
           test -s "${NETWORK_NAME}.nnue"
-          file "${NETWORK_NAME}.nnue"
-          ls -lh "${NETWORK_NAME}.nnue"
 
           if head -c 256 "${NETWORK_NAME}.nnue" |
              grep -Eqi '<!doctype html|<html'; then
-            echo "::error::Downloaded an HTML page instead of an NNUE network."
+            echo "::error::Downloaded HTML instead of an NNUE network."
             exit 1
           fi
+
+          ls -lh "${NETWORK_NAME}.nnue"
 
       - name: Build host network preprocessor
         run: |
@@ -92,9 +92,7 @@ jobs:
             "${GITHUB_WORKSPACE}/processed.nnue"
 
           test -s processed.nnue
-          echo "Preprocessed network:"
           ls -lh processed.nnue
-          file processed.nnue
 
       - name: Configure Android ARM64 build
         env:
@@ -103,10 +101,7 @@ jobs:
           set -euo pipefail
 
           echo "CMake network: ${NETWORK_NAME}"
-          echo "Using preprocessed network: ${GITHUB_WORKSPACE}/processed.nnue"
 
-          # The source's Android flags include -fsee, which is not
-          # a supported Clang option. Remove it for the Android build.
           sed -i 's/ -fsee / /g' CMakeLists.txt
 
           cmake \
@@ -145,12 +140,18 @@ jobs:
           READELF="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
 
           file "$BINARY"
+
           "$READELF" -h "$BINARY" | tee elf-header.txt
 
-          grep -q 'AArch64' elf-header.txt
-          grep -q 'EXEC' elf-header.txt
+          # Android PIE executables normally have ELF type DYN.
+          grep -q 'Machine:.*AArch64' elf-header.txt
+          grep -q 'Type:.*DYN' elf-header.txt
 
-          echo "ARM64 executable verification passed."
+          "$READELF" -l "$BINARY" | tee elf-program-headers.txt
+
+          grep -q '/system/bin/linker64' elf-program-headers.txt
+
+          echo "ARM64 Android PIE verification passed."
 
       - name: Package executable
         run: |
@@ -171,3 +172,4 @@ jobs:
           name: integral-android-arm64-v8a
           path: dist/*
           if-no-files-found: error
+          retention-days: 14
