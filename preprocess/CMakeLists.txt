@@ -10,6 +10,15 @@ option(BUILD_AVX2 "Build with AVX2 optimizations" ${PREPROCESS_BUILD_AVX2})
 option(BUILD_SSE41_POPCNT "Build with SSE4.1 + POPCNT optimizations" ${PREPROCESS_BUILD_SSE41_POPCNT})
 option(BUILD_DEBUG "Build with debug information" ${PREPROCESS_BUILD_DEBUG})
 option(SPARSE_PERMUTE "Use sparse permute network format" ${PREPROCESS_SPARSE_PERMUTE})
+option(PRODUCE_AARCH64_NET "Produce a network with the AArch64 NEON memory layout" ${PREPROCESS_PRODUCE_AARCH64_NET})
+
+if (PRODUCE_AARCH64_NET)
+    if (BUILD_NATIVE OR BUILD_VNNI512 OR BUILD_AVX512 OR BUILD_AVX2_BMI2 OR BUILD_AVX2 OR BUILD_SSE41_POPCNT)
+        message(FATAL_ERROR "PRODUCE_AARCH64_NET requires all host ISA build options to be OFF")
+    endif ()
+    add_compile_definitions(BUILD_AARCH64_LAYOUT=1)
+    message(STATUS "Preprocessor output layout: AArch64 NEON (16-byte vectors, NEON pack order)")
+endif ()
 
 # Architecture-specific flags
 set(CXXFLAGS_NATIVE "-march=native")
