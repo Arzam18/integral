@@ -92,11 +92,10 @@ Score Evaluate(Board &board) {
 
   const auto quantise_vector = simd::Set<I16>(arch::kFtQuantization);
 
+  // Each sparse index represents a group of four U8 features. There can be
+  // at most L1Size / 4 such groups across both perspectives.
   std::array<U16, arch::kL1Size / 4> nnz_indices;
   int nnz_count = 0;
-  auto nnz_base = simd::Zero<U16, 8>();
-  const auto lookup_increment =
-      simd::Set<U16, 8>(kI32Lanes < 8 ? kI32Lanes : 8);
 
   // Activate the feature layer neurons
   alignas(simd::kAlignment) std::array<U8, arch::kL1Size> feature_output;
@@ -147,33 +146,15 @@ Score Evaluate(Board &board) {
             simd::AsVector<U8>(&feature_output[i + them * arch::kL1Size / 2]);
         features = simd::PackusEpi16(first_product, second_product);
 
-        // Sparse Processing, or NNZ (Number of Non-Zero), is an optimization we
-        // perform to minimize the amount of computation done by only
-        // mat-mulling the positive, non-zero activated features with the next
-        // layer's weights
-        // -----------------------------------------------------------------------
-        // Get a mask of all positive, non-zero elements
-        // Each bit in `nnz_mask` corresponds to whether a specific feature is
-        // positive (1) or zero (0)
-        const auto nnz_mask = simd::NonZeroMask(simd::Cast<I32>(features));
-        // Loop through 8-bit (U8) slices of this 16-bit mask
-        for (int chunk = 0; chunk < kI32Lanes; chunk += 8) {
-          // Extract the 8-bit slice from the mask
-          const U8 slice = (nnz_mask >> chunk) & 0b11111111;
-          // Lookup the relative indices for each set bit in the mask,
-          // essentially retrieving the indices for each positive element as an
-          // 8-element vector of I16s
-          const auto indices =
-              simd::Load<U16, 8>(sparse::nnz_table[slice].indices.data());
-          // Store these absolute indices into our table. We account for the
-          // fact that they are relative indices (to this slice) by adding
-          // `nnz_base`, which will reflect the position each element is in the
-          // entire table
-          simd::Store<U16, 8>(&nnz_indices[nnz_count], nnz_base + indices);
-          // Update to reflect the total number of non-zero features processed
-          nnz_count += BitBoard(slice).PopCount();
-          // Increment to reflect the starting index of the next slice
-          nnz_base += lookup_increment;
+        // Sparse processing skips groups of four zero-valued U8 features.
+        // Each bit identifies whether its packed four-byte group is nonzero.
+        // Store only active indices: the lookup-table version wrote eight
+        // entries for every mask and could overrun the L1Size / 4 array.
+        const U16 nnz_mask = simd::NonZeroMask(simd::Cast<I32>(features));
+        const U16 group_base = U16(i / 4 + them * (arch::kL1Size / 2) / 4);
+        for (int lane = 0; lane < kI32Lanes; ++lane) {
+          if (nnz_mask & (U16(1) << lane))
+            nnz_indices[nnz_count++] = group_base + U16(lane);
         }
       }
     }
