@@ -1,0 +1,233 @@
+name: Build Integral Android ARM64 (NEON + DotProd)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  NETWORK_NAME: yveltal
+  NETWORK_URL: https://github.com/aronpetko/integral-networks/releases/download/yveltal/yveltal.nnue
+  NDK_VERSION: r27c
+
+jobs:
+  build-android:
+    name: Build ARM64 NEON and DotProd
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Set up Android NDK
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+          add-to-path: true
+
+      - name: Set up CMake
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: "3.29.x"
+
+      - name: Install Ninja
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+
+      - name: Download upstream NNUE network
+        run: |
+          set -euo pipefail
+
+          echo "Downloading ${NETWORK_NAME}.nnue"
+          curl --fail --location --retry 3 \
+            --output "${NETWORK_NAME}.nnue" \
+            "${NETWORK_URL}"
+
+          test -s "${NETWORK_NAME}.nnue"
+          if head -c 256 "${NETWORK_NAME}.nnue" | grep -Eqi '<!doctype html|<html'; then
+            echo "::error::Downloaded HTML instead of an NNUE network"
+            exit 1
+          fi
+
+          ls -lh "${NETWORK_NAME}.nnue"
+          file "${NETWORK_NAME}.nnue"
+
+      - name: Build host-side AArch64-layout network preprocessor
+        run: |
+          set -euo pipefail
+
+          cmake \
+            -S preprocess \
+            -B build-preprocess-aarch64 \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_NATIVE=OFF \
+            -DBUILD_VNNI512=OFF \
+            -DBUILD_AVX512=OFF \
+            -DBUILD_AVX2_BMI2=OFF \
+            -DBUILD_AVX2=OFF \
+            -DBUILD_SSE41_POPCNT=OFF \
+            -DSPARSE_PERMUTE=OFF \
+            -DPRODUCE_AARCH64_NET=ON
+
+          cmake --build build-preprocess-aarch64 \
+            --target preprocess \
+            --parallel "$(nproc)"
+
+          test -x build-preprocess-aarch64/preprocess
+
+      - name: Preprocess network for ARM64 NEON layout
+        run: |
+          set -euo pipefail
+
+          ./build-preprocess-aarch64/preprocess \
+            "${NETWORK_NAME}.nnue" \
+            "${GITHUB_WORKSPACE}/processed-aarch64.nnue"
+
+          test -s processed-aarch64.nnue
+          ls -lh processed-aarch64.nnue
+
+      - name: Build ARM64 NEON and DotProd binaries
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          set -euo pipefail
+
+          TOOLCHAIN="${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake"
+          NINJA="$(command -v ninja)"
+          EVALFILE_PATH="${GITHUB_WORKSPACE}/processed-aarch64.nnue"
+
+          build_variant() {
+            local variant="$1"
+            local dotprod="$2"
+            local build_dir="build-android-${variant}"
+
+            echo "========================================"
+            echo "Building Integral ARM64 ${variant}"
+            echo "DotProd: ${dotprod}"
+            echo "Network: ${EVALFILE_PATH}"
+            echo "========================================"
+
+            cmake \
+              -S . \
+              -B "${build_dir}" \
+              -G Ninja \
+              -DCMAKE_TOOLCHAIN_FILE="${TOOLCHAIN}" \
+              -DCMAKE_MAKE_PROGRAM="${NINJA}" \
+              -DANDROID_ABI=arm64-v8a \
+              -DANDROID_PLATFORM=android-24 \
+              -DANDROID_STL=c++_static \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DBUILD_NATIVE=OFF \
+              -DBUILD_ANDROID_AARCH64=ON \
+              -DBUILD_ANDROID_DOTPROD="${dotprod}" \
+              -DUSE_NUMA=OFF \
+              -DSPARSE_PERMUTE=OFF \
+              -DPGO_MODE=OFF \
+              -DEVALFILE="${EVALFILE_PATH}"
+
+            cmake --build "${build_dir}" \
+              --target integral \
+              --parallel "$(nproc)" \
+              --verbose
+
+            test -s "${build_dir}/integral"
+          }
+
+          build_variant neon OFF
+          build_variant dotprod ON
+
+      - name: Verify ARM64 ELF, interpreter, and SIMD instructions
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          set -euo pipefail
+
+          LLVM_BIN="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          READELF="${LLVM_BIN}/llvm-readelf"
+          OBJDUMP="${LLVM_BIN}/llvm-objdump"
+
+          verify_elf() {
+            local binary="$1"
+            local name="$2"
+
+            echo "Checking ${name}: ${binary}"
+            file "${binary}"
+            "${READELF}" -h "${binary}" > "${name}-elf.txt"
+            grep -q 'Machine:.*AArch64' "${name}-elf.txt"
+            grep -q 'Type:.*DYN' "${name}-elf.txt"
+            "${READELF}" -l "${binary}" > "${name}-program-headers.txt"
+            grep -q '/system/bin/linker64' "${name}-program-headers.txt"
+
+            if "${READELF}" -d "${binary}" 2>/dev/null | grep -q 'libc++_shared.so'; then
+              echo "::error::${name} depends on libc++_shared.so"
+              exit 1
+            fi
+          }
+
+          verify_elf build-android-neon/integral neon
+          verify_elf build-android-dotprod/integral dotprod
+
+          "${OBJDUMP}" -d build-android-neon/integral > neon-disassembly.txt
+          "${OBJDUMP}" -d --mattr=+dotprod \
+            build-android-dotprod/integral > dotprod-disassembly.txt
+
+          if grep -Eiq '\bsdot\b' neon-disassembly.txt; then
+            echo "::error::Baseline NEON binary unexpectedly contains SDOT"
+            exit 1
+          fi
+
+          if ! grep -Eiq '\b(sqdmulh|smull|smull2|saddlp|fmla)\b' neon-disassembly.txt; then
+            echo "::error::No expected ARM NEON instructions found in baseline binary"
+            exit 1
+          fi
+
+          if ! grep -Eiq '\bsdot\b' dotprod-disassembly.txt; then
+            echo "::error::DotProd binary does not contain SDOT"
+            exit 1
+          fi
+
+          echo "ARM64 ELF and SIMD verification passed."
+
+      - name: Package engine-only artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          cp build-android-neon/integral dist/integral-arm64-neon
+          cp build-android-dotprod/integral dist/integral-arm64-dotprod
+
+          (
+            cd dist
+            sha256sum integral-arm64-neon > integral-arm64-neon.sha256
+            sha256sum integral-arm64-dotprod > integral-arm64-dotprod.sha256
+          )
+
+          ls -lh dist
+
+      - name: Upload baseline NEON engine
+        uses: actions/upload-artifact@v4
+        with:
+          name: integral-android-arm64-neon
+          path: |
+            dist/integral-arm64-neon
+            dist/integral-arm64-neon.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload DotProd engine
+        uses: actions/upload-artifact@v4
+        with:
+          name: integral-android-arm64-dotprod
+          path: |
+            dist/integral-arm64-dotprod
+            dist/integral-arm64-dotprod.sha256
+          if-no-files-found: error
+          retention-days: 14
