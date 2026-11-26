@@ -1,0 +1,76 @@
+Integral v8 Android ARM64 NEON / DotProd port — change log
+
+Base
+----
+The newer upstream Integral source is the base. The older Android fork was inspected as a reference only. Its old search.cc/search.h changes and its removal of upstream NEON implementations were not carried forward. The upstream yveltal network selection is retained.
+
+Files changed
+-------------
+
+1. .github/workflows/android.yml (added)
+   - Adds a manual Android ARM64 workflow with no uci_date input.
+   - Downloads the upstream-default yveltal.nnue network with curl --fail and validates the downloaded file.
+   - Builds a host-side preprocessor in AArch64 layout mode, then preprocesses the network before cross-compilation.
+   - Builds separate arm64-v8a baseline NEON and ARMv8.2 DotProd binaries using NDK r27c and API 24.
+   - Disables NUMA and uses static libc++.
+   - Checks AArch64 ELF type/interpreter, rejects libc++_shared.so, checks baseline NEON instructions and DotProd SDOT, and uploads engine-only artifacts with checksums.
+
+2. CMakeLists.txt
+   - Adds BUILD_ANDROID_AARCH64 and BUILD_ANDROID_DOTPROD options.
+   - Forces the x86/native build-selection variables OFF for Android in both normal CMake scope and the cache. This avoids a normal-variable shadow retaining BUILD_NATIVE=ON.
+   - Adds separate baseline NEON and DotProd compiler-flag selections.
+   - Selects AArch64-layout network preprocessing and accepts a host-preprocessed EVALFILE for Android instead of trying to execute a target preprocessor binary.
+   - Disables release IPO/LTO for the Android variants.
+   - Keeps the upstream yveltal network name and network URL construction.
+
+3. preprocess/CMakeLists.txt
+   - Adds PRODUCE_AARCH64_NET.
+   - Requires all host x86 ISA selections to be OFF in that mode and defines BUILD_AARCH64_LAYOUT for the host preprocessor.
+
+4. shared/simd.h
+   - Adds an explicit Android NEON build-selection branch.
+   - Adds a host-only AArch64 layout mode using 16-byte vectors and the matching 32-register layout without ARM intrinsics.
+   - Retains upstream NEON implementations for float min/max, reductions, multiply-add, high multiply, MulShift, pack, and widening dot products.
+   - Adds exact DotProd implementation for unsigned U8 by signed I8: XOR-centers U8 by 128, applies SDOT, and adds 128 times the four-weight sum per I32 lane.
+   - Corrects NonZeroMask to test I32 lanes for nonzero bits, not signed positivity, across AVX512, AVX2, SSE, NEON and scalar paths.
+
+5. src/engine/evaluation/nnue/nnue.cc
+   - Stores one index for each active group of four U8 features.
+   - Uses the bounded kL1Size/4 index capacity and appends only active lanes, avoiding full-vector stores past the active index count.
+   - Retains the upstream feature-transformer multiply/shift implementation and upstream NNUE flow.
+
+6. src/utils/hash_table.h
+   - Includes sys/mman.h for Android as well as Linux/Apple.
+   - Uses posix_memalign for Android aligned allocations and keeps std::free as the matching release.
+
+7. ANDROID-ARM64-PORT-INTEGRAL.md (added)
+   - Documents architecture targets, network layout, DotProd arithmetic, validation, and remaining checks.
+
+8. ANDROID-ARM64-PORT-INTEGRAL-CHANGELOG.txt (added)
+   - Records the file-by-file changes.
+
+Inspected and intentionally unchanged
+-------------------------------------
+- src/engine/search/search.cc and search.h: newer upstream search implementation retained.
+- preprocess/net_processing.cc: newer generic vector/permutation implementation retained; no old x86-specific Android-fork changes copied.
+- Upstream NNUE architecture, network tensors, feature dimensions, network weights, search logic, UCI protocol, and yveltal network selection.
+- No uci_date workflow input or version rewriting was added.
+
+Validation
+----------
+- Host x86-64 AVX2 engine: configured, compiled and linked with a zero-filled fixture network.
+- Host engine UCI smoke test: startup, uci/isready, and depth-3 search passed using the zero-filled fixture network (not a strength/runtime validation with the real network).
+- Host AArch64-layout preprocessor: built and processed a same-size fixture; output size 91,255,328 bytes, matching the expected processed Network layout.
+- Clang AArch64 baseline NEON probe: cross-compiled; disassembly included NEON instructions and no SDOT.
+- Clang AArch64 DotProd probe: cross-compiled; disassembly included SDOT.
+- 100,000 randomized U8xI8 arithmetic comparisons passed for the centered-SDOT correction.
+- 100,000 randomized AVX2 NonZeroMask comparisons passed.
+- Maximum sparse-index capacity (256 groups) checked.
+- Android POSIX aligned allocation branch compiled and passed a 2 MiB alignment/free test on the host POSIX runtime.
+- CMake Android option override test, workflow YAML parse, archive integrity and modified-only consistency passed.
+
+Remaining verification
+----------------------
+- Full Android NDK cross-build against the actual yveltal.nnue file.
+- Android device startup, real-network load, UCI runtime, NPS, and playing-strength testing.
+- The actual GitHub release network download was not independently performed in the build container; the workflow checks it before preprocessing.

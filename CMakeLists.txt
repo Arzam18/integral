@@ -14,14 +14,38 @@ include(CheckIPOSupported)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Build options for different architectures
-set(BUILD_NATIVE ON)
 option(BUILD_NATIVE "Build with native optimizations" ON)
 option(BUILD_VNNI512 "Build with AVX512 VNNI support" OFF)
 option(BUILD_AVX512 "Build with AVX512 optimizations" OFF)
 option(BUILD_AVX2_BMI2 "Build with AVX2 + BMI2 optimizations" OFF)
 option(BUILD_AVX2 "Build with AVX2 optimizations" OFF)
 option(BUILD_SSE41_POPCNT "Build with SSE4.1 + POPCNT optimizations" OFF)
+option(BUILD_ANDROID_AARCH64 "Build Android ARM64 with NEON" OFF)
+option(BUILD_ANDROID_DOTPROD "Enable ARMv8.2 DotProd instructions (requires BUILD_ANDROID_AARCH64)" OFF)
 option(BUILD_DEBUG "Build with debug information" OFF)
+
+if (BUILD_ANDROID_DOTPROD AND NOT BUILD_ANDROID_AARCH64)
+    message(FATAL_ERROR "BUILD_ANDROID_DOTPROD requires BUILD_ANDROID_AARCH64=ON")
+endif ()
+
+# Android targets must never inherit the default x86/native build selection.
+if (BUILD_ANDROID_AARCH64)
+    # Set normal variables as well as cache entries: normal variables take
+    # precedence in CMake and must not retain the option defaults above.
+    set(BUILD_NATIVE OFF)
+    set(BUILD_VNNI512 OFF)
+    set(BUILD_AVX512 OFF)
+    set(BUILD_AVX2_BMI2 OFF)
+    set(BUILD_AVX2 OFF)
+    set(BUILD_SSE41_POPCNT OFF)
+
+    set(BUILD_NATIVE OFF CACHE BOOL "" FORCE)
+    set(BUILD_VNNI512 OFF CACHE BOOL "" FORCE)
+    set(BUILD_AVX512 OFF CACHE BOOL "" FORCE)
+    set(BUILD_AVX2_BMI2 OFF CACHE BOOL "" FORCE)
+    set(BUILD_AVX2 OFF CACHE BOOL "" FORCE)
+    set(BUILD_SSE41_POPCNT OFF CACHE BOOL "" FORCE)
+endif ()
 
 # Allow user to specify EVALFILE through CMake
 set(NETWORK_NAME yveltal)
@@ -72,24 +96,39 @@ set(PREPROCESS_BUILD_AVX2 ${BUILD_AVX2} CACHE INTERNAL "")
 set(PREPROCESS_BUILD_SSE41_POPCNT ${BUILD_SSE41_POPCNT} CACHE INTERNAL "")
 set(PREPROCESS_BUILD_DEBUG ${BUILD_DEBUG} CACHE INTERNAL "")
 set(PREPROCESS_SPARSE_PERMUTE ${SPARSE_PERMUTE} CACHE INTERNAL "")
+if (BUILD_ANDROID_AARCH64)
+    set(PREPROCESS_PRODUCE_AARCH64_NET ON CACHE INTERNAL "")
+else ()
+    set(PREPROCESS_PRODUCE_AARCH64_NET OFF CACHE INTERNAL "")
+endif ()
 
 # Add subdirectory containing the preprocess project
 add_subdirectory(preprocess)
 
-# Custom command to run preprocessing
-add_custom_command(
-        OUTPUT ${PREPROCESSED_FILE}
-        COMMAND preprocess ${EVALFILE} ${PREPROCESSED_FILE}
-        DEPENDS preprocess ${EVALFILE}
-        COMMENT "Running net preprocessing"
-        VERBATIM
-)
-
-# Custom target that depends on the output file
-add_custom_target(run_preprocess ALL DEPENDS ${PREPROCESSED_FILE})
-
-# Define preprocessed file as a macro so it’s accessible from C++
-add_definitions(-DEVALFILE="${PREPROCESSED_FILE}")
+# Android cross-builds use a host-preprocessed AArch64-layout network supplied
+# by the workflow. The target toolchain must not try to execute its own binary.
+if (BUILD_ANDROID_AARCH64)
+    if (NOT EVALFILE OR NOT EXISTS "${EVALFILE}")
+        message(FATAL_ERROR "Android builds require an existing preprocessed EVALFILE")
+    endif ()
+    message(STATUS "Android AArch64: using preprocessed network ${EVALFILE}")
+    add_custom_target(run_preprocess ALL
+        COMMAND ${CMAKE_COMMAND} -E echo "Using preprocessed AArch64 network: ${EVALFILE}"
+        DEPENDS "${EVALFILE}"
+    )
+    add_definitions(-DEVALFILE="${EVALFILE}")
+else ()
+    # Custom command to run preprocessing
+    add_custom_command(
+            OUTPUT ${PREPROCESSED_FILE}
+            COMMAND preprocess ${EVALFILE} ${PREPROCESSED_FILE}
+            DEPENDS preprocess ${EVALFILE}
+            COMMENT "Running net preprocessing"
+            VERBATIM
+    )
+    add_custom_target(run_preprocess ALL DEPENDS ${PREPROCESSED_FILE})
+    add_definitions(-DEVALFILE="${PREPROCESSED_FILE}")
+endif ()
 
 # Architecture-specific flags
 set(CXXFLAGS_NATIVE "-march=native")
@@ -98,6 +137,8 @@ set(CXXFLAGS_AVX512 "-march=x86-64-v4 -mtune=skylake-avx512 -DBUILD_AVX512 -DUSE
 set(CXXFLAGS_AVX2_BMI2 "-march=haswell -mtune=haswell -mavx2 -mbmi2 -DBUILD_AVX2_BMI2 -DUSE_PEXT")
 set(CXXFLAGS_AVX2 "-march=bdver4 -mno-tbm -mno-sse4a -mno-bmi2 -mtune=znver2 -DBUILD_AVX2")
 set(CXXFLAGS_SSE41_POPCNT "-march=nehalem -mtune=sandybridge -DBUILD_SSE41_POPCNT")
+set(CXXFLAGS_ANDROID_NEON "-march=armv8-a -mtune=cortex-a76 -DBUILD_ANDROID_NEON")
+set(CXXFLAGS_ANDROID_DOTPROD "-march=armv8.2-a+dotprod -mtune=cortex-a76 -DBUILD_ANDROID_NEON -DBUILD_ANDROID_DOTPROD")
 
 # Apply the correct flags based on the build type
 if (BUILD_DEBUG)
@@ -113,6 +154,15 @@ elseif (BUILD_AVX2)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CXXFLAGS_AVX2} -DBUILD_AVX2")
 elseif (BUILD_SSE41_POPCNT)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CXXFLAGS_SSE41_POPCNT} -DBUILD_SSE41_POPCNT")
+elseif (BUILD_ANDROID_AARCH64)
+    if (BUILD_ANDROID_DOTPROD)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CXXFLAGS_ANDROID_DOTPROD}")
+        message(STATUS "Building Android ARM64 with NEON + DotProd")
+    else ()
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CXXFLAGS_ANDROID_NEON}")
+        message(STATUS "Building Android ARM64 baseline NEON")
+    endif ()
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 elseif (BUILD_NATIVE)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CXXFLAGS_NATIVE} -DBUILD_NATIVE")
 
@@ -180,7 +230,11 @@ set(CMAKE_CXX_FLAGS_DEBUG "-pthread -g -O0")
 check_ipo_supported(RESULT LTO_SUPPORTED)
 
 if (LTO_SUPPORTED)
-    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+    if (BUILD_ANDROID_AARCH64)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE OFF)
+    else ()
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+    endif ()
     set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO OFF)
     set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_DEBUG OFF)
 endif ()
