@@ -12,7 +12,7 @@
 
 #include "types.h"
 
-#if defined(__linux__) || defined(__APPLE__)
+#if defined(__linux__) || defined(__APPLE__) || defined(__ANDROID__)
 #include <sys/mman.h>
 #elif defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -84,7 +84,7 @@ inline std::size_t LargePageSize() {
   }
 
   void* ptr = nullptr;
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(__ANDROID__)
   if (posix_memalign(&ptr, alignment, size)) throw std::bad_alloc();
 #else
   ptr = std::aligned_alloc(alignment, size);
