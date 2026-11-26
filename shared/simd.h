@@ -85,12 +85,40 @@
 #define BUILD_HAS_BMI1 0
 #define BUILD_HAS_POPCNT 1
 #define BUILD_HAS_NEON 0
+#elif defined(BUILD_ANDROID_NEON)
+#define BUILD_HAS_BMI2 0
+#define BUILD_HAS_AVX512VBMI 0
+#define BUILD_HAS_AVX512VNNI 0
+#define BUILD_HAS_AVX512 0
+#define BUILD_HAS_AVX2 0
+#define BUILD_HAS_SSE41 0
+#define BUILD_HAS_BMI1 0
+#define BUILD_HAS_POPCNT 0
+#define BUILD_HAS_NEON 1
+#elif defined(BUILD_AARCH64_LAYOUT)
+// Host-side network preprocessor mode. It keeps the exact 128-bit vector and
+// packing layout used by AArch64 NEON without including ARM-only intrinsics.
+#define BUILD_HAS_BMI2 0
+#define BUILD_HAS_AVX512VBMI 0
+#define BUILD_HAS_AVX512VNNI 0
+#define BUILD_HAS_AVX512 0
+#define BUILD_HAS_AVX2 0
+#define BUILD_HAS_SSE41 0
+#define BUILD_HAS_BMI1 0
+#define BUILD_HAS_POPCNT 0
+#define BUILD_HAS_NEON 0
+#define BUILD_HAS_AARCH64_LAYOUT 1
 #else
 #error No architecture specified
 #endif
 
+#ifndef BUILD_HAS_AARCH64_LAYOUT
+#define BUILD_HAS_AARCH64_LAYOUT 0
+#endif
+
 #define BUILD_HAS_SIMD \
-  (BUILD_HAS_AVX512 || BUILD_HAS_AVX2 || BUILD_HAS_SSE41 || BUILD_HAS_NEON)
+  (BUILD_HAS_AVX512 || BUILD_HAS_AVX2 || BUILD_HAS_SSE41 || BUILD_HAS_NEON || \
+   BUILD_HAS_AARCH64_LAYOUT)
 
 #if BUILD_HAS_AVX512 || BUILD_HAS_AVX2 || BUILD_HAS_SSE41
 #include <immintrin.h>
@@ -106,9 +134,9 @@ constexpr std::size_t kVectorRegisters = 32;
 #elif BUILD_HAS_AVX2
 constexpr std::size_t kVectorBytes = 32;
 constexpr std::size_t kVectorRegisters = 16;
-#elif BUILD_HAS_SSE41 || BUILD_HAS_NEON
+#elif BUILD_HAS_SSE41 || BUILD_HAS_NEON || BUILD_HAS_AARCH64_LAYOUT
 constexpr std::size_t kVectorBytes = 16;
-#if BUILD_HAS_NEON
+#if BUILD_HAS_NEON || BUILD_HAS_AARCH64_LAYOUT
 constexpr std::size_t kVectorRegisters = 32;
 #else
 constexpr std::size_t kVectorRegisters = 16;
@@ -545,10 +573,21 @@ template <int kShift>
                                            std::bit_cast<uint8x16_t>(u),
                                            std::bit_cast<int8x16_t>(i)));
 #elif BUILD_HAS_NEON && defined(__ARM_FEATURE_DOTPROD)
-  // Exact only when u <= 127
-  return std::bit_cast<Vepi32>(vdotq_s32(std::bit_cast<int32x4_t>(sum),
-                                         std::bit_cast<int8x16_t>(u),
-                                         std::bit_cast<int8x16_t>(i)));
+  // SDOT is signed-byte x signed-byte, while the NNUE operation is U8 x I8.
+  // Bias U8 by 128: s = int8(u ^ 0x80), hence u = s + 128.
+  // The exact result is SDOT(s, i) + 128 * sum(i), independently per I32 lane.
+  const auto unsigned_u = std::bit_cast<uint8x16_t>(u);
+  const auto signed_u = vreinterpretq_s8_u8(
+      veorq_u8(unsigned_u, vdupq_n_u8(0x80)));
+  const auto signed_weights = std::bit_cast<int8x16_t>(i);
+  const auto signed_dot = vdotq_s32(std::bit_cast<int32x4_t>(sum),
+                                    signed_u,
+                                    signed_weights);
+  const auto weight_sum = vdotq_s32(vdupq_n_s32(0),
+                                    vdupq_n_s8(1),
+                                    signed_weights);
+  return std::bit_cast<Vepi32>(
+      vaddq_s32(signed_dot, vmulq_n_s32(weight_sum, 128)));
 #elif BUILD_HAS_NEON
   const auto vu = std::bit_cast<uint8x16_t>(u);
   const auto vi = std::bit_cast<int8x16_t>(i);
@@ -600,25 +639,30 @@ template <int kShift>
 #endif
 }
 
-// Bitmask of I32 lanes greater than zero.
+// Bitmask of nonzero I32 lanes. Here each I32 lane packs four U8 features,
+// so signed-positive tests are incorrect when the highest packed byte >= 128.
 [[nodiscard]] inline U16 NonZeroMask(Vepi32 v) {
 #if BUILD_HAS_AVX512
-  return _mm512_cmpgt_epi32_mask(std::bit_cast<__m512i>(v),
-                                 _mm512_setzero_si512());
+  return _mm512_cmp_epi32_mask(std::bit_cast<__m512i>(v),
+                               _mm512_setzero_si512(),
+                               _MM_CMPINT_NE);
 #elif BUILD_HAS_AVX2
-  return U16(_mm256_movemask_ps(_mm256_castsi256_ps(
-      _mm256_cmpgt_epi32(std::bit_cast<__m256i>(v), _mm256_setzero_si256()))));
+  const auto zero_mask = _mm256_movemask_ps(_mm256_castsi256_ps(
+      _mm256_cmpeq_epi32(std::bit_cast<__m256i>(v), _mm256_setzero_si256())));
+  return U16((~zero_mask) & 0xFF);
 #elif BUILD_HAS_SSE41
-  return U16(_mm_movemask_ps(_mm_castsi128_ps(
-      _mm_cmpgt_epi32(std::bit_cast<__m128i>(v), _mm_setzero_si128()))));
+  const auto zero_mask = _mm_movemask_ps(_mm_castsi128_ps(
+      _mm_cmpeq_epi32(std::bit_cast<__m128i>(v), _mm_setzero_si128())));
+  return U16((~zero_mask) & 0x0F);
 #elif BUILD_HAS_NEON
   constexpr std::uint32_t kLaneBits[4] = {1, 2, 4, 8};
-  const uint32x4_t positive = vcgtzq_s32(std::bit_cast<int32x4_t>(v));
-  return U16(vaddvq_u32(vandq_u32(positive, vld1q_u32(kLaneBits))));
+  const auto nonzero = vmvnq_u32(
+      vceqq_s32(std::bit_cast<int32x4_t>(v), vdupq_n_s32(0)));
+  return U16(vaddvq_u32(vandq_u32(nonzero, vld1q_u32(kLaneBits))));
 #else
   U16 mask = 0;
   for (std::size_t i = 0; i < kNativeLanes<I32>; ++i)
-    mask |= U16(v[i] > 0) << i;
+    mask |= U16(v[i] != 0) << i;
   return mask;
 #endif
 }
